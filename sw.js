@@ -1,4 +1,4 @@
-const CACHE = "pw-shell-v1";
+const CACHE = "pw-shell-v2";
 const SHELL = ["./", "index.html", "css/style.css", "js/app.js", "manifest.webmanifest", "icons/icon.svg"];
 
 self.addEventListener("install", e => {

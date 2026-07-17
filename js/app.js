@@ -266,6 +266,42 @@ function fmtQty(q, mktId) {
 }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
 
+/* ---------------- 即時查詢(FinMind,瀏覽器直接呼叫) ---------------- */
+async function finmind(params) {
+  const url = "https://api.finmindtrade.com/api/v4/data?" + new URLSearchParams(params);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const j = await res.json();
+  if (!j.data || !j.data.length) throw new Error("no data");
+  return j.data;
+}
+/** 依市場+代號即時查名稱與最近收盤價;查不到的欄位回 null */
+async function lookupAsset(mkt, sym) {
+  const start = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
+  let name = null, price = null;
+  if (mkt === "TW") {
+    try { const info = await finmind({ dataset: "TaiwanStockInfo", data_id: sym }); name = info[0]?.stock_name || null; } catch {}
+    try { const rows = await finmind({ dataset: "TaiwanStockPrice", data_id: sym, start_date: start }); price = +rows[rows.length - 1].close || null; } catch {}
+  } else if (mkt === "US") {
+    const id = sym.toUpperCase();
+    try {
+      const rows = await finmind({ dataset: "USStockPrice", data_id: id, start_date: start });
+      const last = rows[rows.length - 1];
+      price = +(last.Close ?? last.close) || null;
+    } catch {}
+  }
+  return { name, price };
+}
+/** 即時匯率(open.er-api.com,免金鑰、允許跨域) */
+async function refreshFxLive() {
+  const r = await fetch("https://open.er-api.com/v6/latest/USD").then(x => x.json());
+  if (!r?.rates?.TWD) throw new Error("no TWD");
+  const at = new Date().toISOString();
+  state.fxManual.USD = { rate: r.rates.TWD, at };
+  if (r.rates.JPY) state.fxManual.JPY = { rate: r.rates.TWD / r.rates.JPY, at };
+  save();
+}
+
 /* ---------------- 報價載入 ---------------- */
 async function loadFeed(showToast = false) {
   const btn = document.getElementById("btnRefreshPrices");
@@ -311,6 +347,10 @@ function openModal(title, fields, onOk, okText = "儲存") {
       return `<div class="field"><label for="f_${f.id}">${esc(f.label)}</label>
         <select id="f_${f.id}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
         ${f.hint ? `<div class="field-hint">${esc(f.hint)}</div>` : ""}</div>`;
+    }
+    if (f.type === "button") {
+      return `<div class="field"><button type="button" class="btn small" id="f_${f.id}" style="width:100%">${esc(f.label)}</button>
+        ${f.hint ? `<div class="field-hint" style="margin-top:5px">${esc(f.hint)}</div>` : ""}</div>`;
     }
     if (f.type === "row") {
       return `<div class="field-row">${f.fields.map(sub => `
@@ -452,7 +492,20 @@ function vRebalance() {
 function vHoldings() {
   const p = activePortfolio();
   if (!p) return `<div class="empty">尚無組合。</div>`;
-  let html = `<div class="section-title"><span>帳戶與現金</span>
+  let html = "";
+  // 提示:持有但不在每日報價清單中的代號
+  const missingFeed = new Set();
+  for (const pf of state.portfolios) for (const pos of pf.positions) {
+    if ((pos.market === "TW" || pos.market === "US") && !feedPrice(`${pos.market}:${pos.symbol}`)) missingFeed.add(pos.symbol);
+  }
+  if (feed && missingFeed.size) {
+    html += `<div class="alert-strip gold" style="align-items:center;justify-content:space-between">
+      <span>📋 ${[...missingFeed].join("、")} 不在每日報價清單中,只能靠查詢價/手動價。</span>
+      <button class="btn small" data-act="copySymbols" style="flex:0 0 auto">複製新清單</button>
+    </div>
+    <p class="inline-note" style="margin-top:-4px;margin-bottom:10px">按「複製新清單」→ 到 GitHub 編輯 data/symbols.json 全選貼上 → Commit → Actions 跑一次,之後每天自動更新這些代號。</p>`;
+  }
+  html += `<div class="section-title"><span>帳戶與現金</span>
     <button class="btn small" data-act="addAccount">+ 帳戶</button></div>`;
   html += `<div class="card flat">` + (p.accounts.length ? p.accounts.map(a => `
     <div class="list-row">
@@ -588,7 +641,8 @@ function vSettings() {
       <div class="list-sub num">台股手續費 ${s.feeTW}%・證交稅 ${s.taxTW}%・複委託 ${s.feeUS}%</div></div>
       <button class="btn small" data-act="editFees">調整</button></div>
   </div>
-  <div class="section-title"><span>匯率(換算基準:TWD)</span></div>
+  <div class="section-title"><span>匯率(換算基準:TWD)</span>
+    <button class="btn small" data-act="refreshFx">↻ 立即更新</button></div>
   <div class="card flat">
     <div class="list-row"><div class="list-main"><div class="list-title">USD/TWD</div>
       <div class="list-sub num">${nf2.format(fxU.rate)}(${fxU.source === "feed" ? "自動" : fxU.source === "manual" ? "手動" : "預設值,建議更新"})</div></div>
@@ -683,6 +737,7 @@ const actions = {
   _positionForm(pos) {
     const p = activePortfolio();
     if (!p.accounts.length) { toast("請先新增帳戶"); return; }
+    let fetchedPrice = null; // 查詢到的即時價,儲存時寫入
     openModal(pos ? "編輯部位" : "新增部位", [
       { id: "acc", label: "帳戶", type: "select", value: pos?.accountId || p.accounts[0].id,
         options: p.accounts.map(a => ({ value: a.id, label: a.name })) },
@@ -690,20 +745,40 @@ const actions = {
         options: Object.entries(MARKETS).map(([k, m]) => ({ value: k, label: `${m.label}(${m.currency})` })) },
       { id: "row1", type: "row", fields: [
         { id: "sym", label: "代號", value: pos?.symbol || "", required: true, placeholder: "2330 / VOO" },
-        { id: "name", label: "名稱(可留空)", value: pos?.name || "", placeholder: "台積電" }] },
+        { id: "name", label: "名稱(可留空)", value: pos?.name || "", placeholder: "自動帶入" }] },
+      { id: "lookup", type: "button", label: "🔍 查詢名稱與現價",
+        hint: "輸入代號後點此,自動帶入官方名稱與最近收盤價" },
       { id: "row2", type: "row", fields: [
         { id: "qty", label: "股數", type: "number", value: pos?.qty ?? "", step: "any", required: true },
         { id: "cost", label: "平均成本(原幣)", type: "number", value: pos?.avgCost ?? "", step: "any", required: true }] },
-      { id: "hint", label: "台股一張 = 1000 股,請輸入總股數", type: "hidden" },
     ], v => {
       if (!v.sym || !v.qty) return false;
       const data = { accountId: v.acc, market: v.mkt, symbol: v.sym.toUpperCase(),
         name: v.name, qty: +v.qty, avgCost: +v.cost || 0 };
       if (pos) Object.assign(pos, data);
       else p.positions.push({ id: uid(), ...data });
+      const key = `${data.market}:${data.symbol}`;
+      if (fetchedPrice != null && !feedPrice(key)) {
+        state.manualPrices[key] = { price: fetchedPrice, at: new Date().toISOString() };
+      }
       save(); render();
     });
-    document.querySelector('#f_hint')?.closest('.field')?.remove();
+    const btn = document.getElementById("f_lookup");
+    if (btn) btn.onclick = async () => {
+      const mkt = document.getElementById("f_mkt").value;
+      const sym = document.getElementById("f_sym").value.trim().toUpperCase();
+      if (!sym) { toast("請先輸入代號"); return; }
+      btn.disabled = true; btn.textContent = "查詢中…";
+      try {
+        const r = await lookupAsset(mkt, sym);
+        const nameInput = document.getElementById("f_name");
+        if (r.name && !nameInput.value) nameInput.value = r.name;
+        if (r.price != null) fetchedPrice = r.price;
+        if (!r.name && r.price == null) toast("查無此代號,請確認市場與代號");
+        else toast(`${r.name || sym}${r.price != null ? " ・ 現價 " + r.price : "(價格查無,請手動輸入)"}`);
+      } catch { toast("查詢失敗,可能是網路或 API 額度問題"); }
+      btn.disabled = false; btn.textContent = "🔍 查詢名稱與現價";
+    };
   },
   delPosition(el) {
     confirmDanger("確定刪除此部位?", () => {
@@ -783,6 +858,25 @@ const actions = {
     });
   },
 
+  copySymbols() {
+    const tw = new Set(), us = new Set();
+    for (const pf of state.portfolios) for (const pos of pf.positions) {
+      if (pos.market === "TW") tw.add(pos.symbol);
+      else if (pos.market === "US") us.add(pos.symbol.toUpperCase());
+    }
+    const json = JSON.stringify({
+      "_說明": "要自動抓價的代號清單。台股放 tw(上市與上櫃皆可),美股放 us。修改後 push,下次排程或手動觸發 Actions 即生效。",
+      tw: [...tw].sort(), us: [...us].sort(),
+    }, null, 2);
+    navigator.clipboard.writeText(json)
+      .then(() => toast("已複製,貼到 GitHub 的 data/symbols.json"))
+      .catch(() => { openModal("複製失敗,請手動複製以下內容", [], () => {}, "關閉");
+        document.getElementById("modalBody").innerHTML = `<pre style="font-size:12px;white-space:pre-wrap;font-family:var(--mono)">${esc(json)}</pre>`; });
+  },
+  async refreshFx() {
+    try { await refreshFxLive(); render(); toast("匯率已更新"); }
+    catch { toast("匯率查詢失敗,請手動輸入"); }
+  },
   exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
