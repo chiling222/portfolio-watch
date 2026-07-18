@@ -3,23 +3,23 @@
    色彩慣例採台股讀法:紅 = 超配/漲、綠 = 低配/跌
    ============================================================ */
 :root{
-  --bg:        #10151C;   /* 石墨墨色底 */
-  --surface:   #1A222C;   /* 卡片 */
-  --surface-2: #222C38;   /* 卡片內層 */
-  --line:      #2C3846;
-  --text:      #E9EEF4;
-  --muted:     #8D99A8;
-  --gold:      #D9A441;   /* 目標 / 品牌 */
-  --over:      #E5484D;   /* 超配(台股紅) */
-  --under:     #2FBF71;   /* 低配(台股綠) */
-  --ok:        #5B8DEF;   /* 區間內 */
-  --warn-bg:   rgba(229,72,77,.12);
+  --bg:        #F3EFE6;   /* 米色底 */
+  --surface:   #FCFAF4;   /* 卡片(暖白) */
+  --surface-2: #ECE5D6;   /* 卡片內層 */
+  --line:      #DFD7C5;
+  --text:      #2C2A24;
+  --muted:     #8C8370;
+  --gold:      #A87A1E;   /* 目標 / 品牌(深金,淺底可讀) */
+  --over:      #C9383E;   /* 超配(台股紅) */
+  --under:     #1D9457;   /* 低配(台股綠) */
+  --ok:        #3B6FD4;   /* 區間內 */
+  --warn-bg:   rgba(201,56,62,.08);
   --radius: 12px;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --sans: "Noto Sans TC", system-ui, -apple-system, sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html{color-scheme:dark}
+html{color-scheme:light}
 body{
   font-family:var(--sans);
   background:var(--bg);
@@ -36,7 +36,7 @@ body{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:10px 16px calc(10px);
   padding-top:calc(10px + env(safe-area-inset-top));
-  background:rgba(16,21,28,.92);backdrop-filter:blur(10px);
+  background:rgba(243,239,230,.92);backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line);
 }
 .brand{display:flex;align-items:center;gap:8px;color:var(--gold)}
@@ -100,7 +100,7 @@ body{
 .ruler-dev{font-size:13px;font-weight:600;flex:0 0 auto}
 .ruler-meta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:7px}
 .ruler-track{position:relative;height:14px;background:var(--surface-2);border-radius:4px}
-.ruler-band{position:absolute;top:0;height:100%;background:rgba(217,164,65,.14);border-radius:3px}
+.ruler-band{position:absolute;top:0;height:100%;background:rgba(168,122,30,.14);border-radius:3px}
 .ruler-fill{position:absolute;top:3px;height:8px;border-radius:3px;background:var(--ok);transition:width .4s ease}
 .ruler-fill.over{background:var(--over)}
 .ruler-fill.under{background:var(--under)}
@@ -139,21 +139,21 @@ body{
   flex:0 0 auto;width:44px;text-align:center;font-size:13px;font-weight:700;
   padding:5px 0;border-radius:8px;
 }
-.trade-action.buy{background:rgba(229,72,77,.15);color:var(--over)}
-.trade-action.sell{background:rgba(47,191,113,.15);color:var(--under)}
+.trade-action.buy{background:rgba(201,56,62,.12);color:var(--over)}
+.trade-action.sell{background:rgba(29,148,87,.12);color:var(--under)}
 .mode-toggle{display:flex;background:var(--surface-2);border-radius:10px;padding:3px;gap:3px;margin-bottom:12px}
 .mode-toggle button{
   flex:1;border:none;background:transparent;color:var(--muted);
   padding:8px;border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--sans);
 }
-.mode-toggle button.active{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.mode-toggle button.active{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 
 /* ---- 按鈕 ---- */
 .btn{
   border:1px solid var(--line);background:var(--surface-2);color:var(--text);
   padding:9px 16px;border-radius:9px;font-size:14px;cursor:pointer;font-family:var(--sans);
 }
-.btn.primary{background:var(--gold);border-color:var(--gold);color:#1A1204;font-weight:700}
+.btn.primary{background:var(--gold);border-color:var(--gold);color:#FFFDF7;font-weight:700}
 .btn.ghost{background:transparent}
 .btn.danger{color:var(--over);border-color:var(--over);background:transparent}
 .btn.small{padding:5px 10px;font-size:12px;border-radius:7px}
@@ -164,7 +164,7 @@ body{
 /* ---- 底部導覽 ---- */
 .tabbar{
   position:fixed;left:0;right:0;bottom:0;z-index:20;
-  display:flex;background:rgba(16,21,28,.95);backdrop-filter:blur(10px);
+  display:flex;background:rgba(243,239,230,.95);backdrop-filter:blur(10px);
   border-top:1px solid var(--line);
   padding-bottom:env(safe-area-inset-bottom);
 }
@@ -204,15 +204,15 @@ body{
   position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--surface-2);border:1px solid var(--line);color:var(--text);
   padding:10px 18px;border-radius:99px;font-size:13px;z-index:50;
-  box-shadow:0 4px 16px rgba(0,0,0,.4);white-space:nowrap;
+  box-shadow:0 4px 16px rgba(0,0,0,.15);white-space:nowrap;
 }
 .alert-strip{
   display:flex;gap:8px;align-items:flex-start;
-  background:var(--warn-bg);border:1px solid rgba(229,72,77,.35);
+  background:var(--warn-bg);border:1px solid rgba(201,56,62,.3);
   border-radius:var(--radius);padding:11px 14px;margin-bottom:10px;
   font-size:13px;line-height:1.6;
 }
-.alert-strip.gold{background:rgba(217,164,65,.1);border-color:rgba(217,164,65,.4)}
+.alert-strip.gold{background:rgba(168,122,30,.08);border-color:rgba(168,122,30,.35)}
 .inline-note{font-size:12px;color:var(--muted);line-height:1.7;margin-top:8px}
 a{color:var(--gold)}
 @media (prefers-reduced-motion: reduce){
