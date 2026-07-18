@@ -8,7 +8,7 @@
   --surface-2: #ECE5D6;   /* 卡片內層 */
   --line:      #DFD7C5;
   --text:      #2C2A24;
-  --muted:     #8C8370;
+  --muted:     #5A5344;   /* 說明字(接近黑,仍與正文略有區別) */
   --gold:      #A87A1E;   /* 目標 / 品牌(深金,淺底可讀) */
   --over:      #C9383E;   /* 超配(台股紅) */
   --under:     #1D9457;   /* 低配(台股綠) */
@@ -19,7 +19,7 @@
   --sans: "Noto Sans TC", system-ui, -apple-system, sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html{color-scheme:light}
+html{color-scheme:light;font-size:18px}
 body{
   font-family:var(--sans);
   background:var(--bg);
@@ -27,6 +27,8 @@ body{
   min-height:100dvh;
   padding-bottom:calc(64px + env(safe-area-inset-bottom));
   -webkit-font-smoothing:antialiased;
+  font-size:1rem;
+  font-weight:500;
 }
 .num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 
@@ -41,12 +43,12 @@ body{
 }
 .brand{display:flex;align-items:center;gap:8px;color:var(--gold)}
 .brand-mark{width:20px;height:20px}
-.brand-name{font-size:15px;font-weight:400;color:var(--text);letter-spacing:.02em}
+.brand-name{font-size:0.833rem;font-weight:600;color:var(--text);letter-spacing:.02em}
 .brand-name b{font-weight:700;color:var(--gold)}
 .topbar-controls{display:flex;align-items:center;gap:8px;min-width:0}
 .portfolio-switcher{
   max-width:180px;background:var(--surface);color:var(--text);
-  border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:14px;
+  border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:0.778rem;
   font-family:var(--sans);
 }
 .btn-icon{
@@ -59,7 +61,7 @@ body{
 @keyframes spin{to{transform:rotate(360deg)}}
 
 .feed-status{
-  padding:6px 16px;font-size:12px;color:var(--muted);
+  padding:6px 16px;font-size:0.667rem;color:var(--muted);
   border-bottom:1px solid var(--line);background:var(--surface);
 }
 .feed-status.stale{color:var(--gold)}
@@ -67,7 +69,7 @@ body{
 /* ---- 版面 ---- */
 .view{max-width:860px;margin:0 auto;padding:16px 16px 24px}
 .section-title{
-  font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.14em;
+  font-size:0.667rem;font-weight:700;color:var(--muted);letter-spacing:.14em;
   margin:22px 0 10px;display:flex;align-items:center;justify-content:space-between;
 }
 .section-title:first-child{margin-top:4px}
@@ -82,9 +84,9 @@ body{
 .stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 @media(min-width:640px){.stat-grid{grid-template-columns:repeat(4,1fr)}}
 .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px}
-.stat .k{font-size:12px;color:var(--muted);margin-bottom:4px}
-.stat .v{font-size:19px;font-weight:600}
-.stat .sub{font-size:12px;color:var(--muted);margin-top:3px}
+.stat .k{font-size:0.667rem;color:var(--muted);margin-bottom:4px}
+.stat .v{font-size:1.056rem;font-weight:700}
+.stat .sub{font-size:0.667rem;color:var(--muted);margin-top:3px}
 .pos{color:var(--over)} .neg{color:var(--under)}
 
 /* ---- 投入進度 ---- */
@@ -95,10 +97,10 @@ body{
 .ruler-row{padding:12px 16px;border-bottom:1px solid var(--line)}
 .ruler-row:last-child{border-bottom:none}
 .ruler-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:2px}
-.ruler-name{font-size:14px;font-weight:500;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ruler-name .sym{color:var(--muted);font-size:12px;margin-left:6px;font-family:var(--mono)}
-.ruler-dev{font-size:13px;font-weight:600;flex:0 0 auto}
-.ruler-meta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:7px}
+.ruler-name{font-size:0.778rem;font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ruler-name .sym{color:var(--muted);font-size:0.667rem;margin-left:6px;font-family:var(--mono)}
+.ruler-dev{font-size:0.722rem;font-weight:600;flex:0 0 auto}
+.ruler-meta{display:flex;justify-content:space-between;font-size:0.667rem;color:var(--muted);margin-bottom:7px}
 .ruler-track{position:relative;height:14px;background:var(--surface-2);border-radius:4px}
 .ruler-band{position:absolute;top:0;height:100%;background:rgba(168,122,30,.14);border-radius:3px}
 .ruler-fill{position:absolute;top:3px;height:8px;border-radius:3px;background:var(--ok);transition:width .4s ease}
@@ -112,7 +114,7 @@ body{
   border:4px solid transparent;border-top-color:var(--gold);
 }
 .badge{
-  display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;
+  display:inline-block;font-size:0.611rem;padding:1px 7px;border-radius:99px;
   border:1px solid var(--line);color:var(--muted);vertical-align:1px;margin-left:6px;
 }
 .badge.alert{color:var(--over);border-color:var(--over);background:var(--warn-bg)}
@@ -125,18 +127,18 @@ body{
 }
 .list-row:last-child{border-bottom:none}
 .list-main{min-width:0;flex:1}
-.list-title{font-size:14px;font-weight:500}
-.list-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.list-title{font-size:0.778rem;font-weight:600}
+.list-sub{font-size:0.667rem;color:var(--muted);margin-top:2px}
 .list-val{text-align:right;flex:0 0 auto}
-.list-val .v{font-size:14px;font-weight:600}
-.list-val .sub{font-size:12px;color:var(--muted)}
+.list-val .v{font-size:0.778rem;font-weight:700}
+.list-val .sub{font-size:0.667rem;color:var(--muted)}
 .row-actions{display:flex;gap:6px;flex:0 0 auto}
 
 /* ---- 再平衡表 ---- */
 .trade-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
 .trade-row:last-child{border-bottom:none}
 .trade-action{
-  flex:0 0 auto;width:44px;text-align:center;font-size:13px;font-weight:700;
+  flex:0 0 auto;width:44px;text-align:center;font-size:0.722rem;font-weight:700;
   padding:5px 0;border-radius:8px;
 }
 .trade-action.buy{background:rgba(201,56,62,.12);color:var(--over)}
@@ -144,19 +146,19 @@ body{
 .mode-toggle{display:flex;background:var(--surface-2);border-radius:10px;padding:3px;gap:3px;margin-bottom:12px}
 .mode-toggle button{
   flex:1;border:none;background:transparent;color:var(--muted);
-  padding:8px;border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--sans);
+  padding:8px;border-radius:8px;font-size:0.722rem;cursor:pointer;font-family:var(--sans);
 }
 .mode-toggle button.active{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 
 /* ---- 按鈕 ---- */
 .btn{
   border:1px solid var(--line);background:var(--surface-2);color:var(--text);
-  padding:9px 16px;border-radius:9px;font-size:14px;cursor:pointer;font-family:var(--sans);
+  padding:9px 16px;border-radius:9px;font-size:0.778rem;cursor:pointer;font-family:var(--sans);
 }
 .btn.primary{background:var(--gold);border-color:var(--gold);color:#FFFDF7;font-weight:700}
 .btn.ghost{background:transparent}
 .btn.danger{color:var(--over);border-color:var(--over);background:transparent}
-.btn.small{padding:5px 10px;font-size:12px;border-radius:7px}
+.btn.small{padding:5px 10px;font-size:0.667rem;border-radius:7px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn-add{width:100%;border-style:dashed;color:var(--muted);background:transparent;margin-top:2px}
 .btn-add:hover{color:var(--gold);border-color:var(--gold)}
@@ -170,11 +172,11 @@ body{
 }
 .tab{
   flex:1;border:none;background:transparent;color:var(--muted);
-  padding:12px 0 10px;font-size:12px;cursor:pointer;font-family:var(--sans);
+  padding:12px 0 10px;font-size:0.667rem;cursor:pointer;font-family:var(--sans);
   border-top:2px solid transparent;
 }
 .tab.active{color:var(--gold);border-top-color:var(--gold);font-weight:700}
-@media(min-width:640px){.tab{font-size:13px}}
+@media(min-width:640px){.tab{font-size:0.722rem}}
 
 /* ---- Modal ---- */
 .modal{
@@ -183,37 +185,37 @@ body{
 }
 .modal::backdrop{background:rgba(0,0,0,.55);backdrop-filter:blur(2px)}
 .modal-form{padding:18px}
-.modal-form h3{font-size:16px;margin-bottom:14px}
+.modal-form h3{font-size:0.889rem;margin-bottom:14px}
 .modal-body{display:flex;flex-direction:column;gap:12px;max-height:60vh;overflow-y:auto}
-.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+.field label{display:block;font-size:0.667rem;color:var(--muted);margin-bottom:5px}
 .field input,.field select{
   width:100%;background:var(--surface-2);border:1px solid var(--line);color:var(--text);
-  border-radius:8px;padding:9px 11px;font-size:15px;font-family:var(--sans);
+  border-radius:8px;padding:9px 11px;font-size:0.833rem;font-family:var(--sans);
 }
 .field input.num-input{font-family:var(--mono)}
 .field-row{display:flex;gap:10px}
 .field-row .field{flex:1}
-.field-hint{font-size:12px;color:var(--muted)}
+.field-hint{font-size:0.667rem;color:var(--muted)}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 
 /* ---- 其他 ---- */
 .empty{
-  text-align:center;color:var(--muted);padding:36px 20px;font-size:14px;line-height:1.7;
+  text-align:center;color:var(--muted);padding:36px 20px;font-size:0.778rem;line-height:1.7;
 }
 .toast{
   position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--surface-2);border:1px solid var(--line);color:var(--text);
-  padding:10px 18px;border-radius:99px;font-size:13px;z-index:50;
+  padding:10px 18px;border-radius:99px;font-size:0.722rem;z-index:50;
   box-shadow:0 4px 16px rgba(0,0,0,.15);white-space:nowrap;
 }
 .alert-strip{
   display:flex;gap:8px;align-items:flex-start;
   background:var(--warn-bg);border:1px solid rgba(201,56,62,.3);
   border-radius:var(--radius);padding:11px 14px;margin-bottom:10px;
-  font-size:13px;line-height:1.6;
+  font-size:0.722rem;line-height:1.6;
 }
 .alert-strip.gold{background:rgba(168,122,30,.08);border-color:rgba(168,122,30,.35)}
-.inline-note{font-size:12px;color:var(--muted);line-height:1.7;margin-top:8px}
+.inline-note{font-size:0.667rem;color:var(--muted);line-height:1.7;margin-top:8px}
 a{color:var(--gold)}
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}
