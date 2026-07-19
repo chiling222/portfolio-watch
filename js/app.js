@@ -909,6 +909,29 @@ const actions = {
   },
 };
 
+/** 自動補查:持有但缺報價或報價過期(>5天)的標的,靜默用即時查詢補上 */
+async function autoBackfillPrices() {
+  const seen = new Set(), tasks = [];
+  for (const pf of state.portfolios) for (const pos of pf.positions) {
+    if (pos.market !== "TW" && pos.market !== "US") continue;
+    const key = `${pos.market}:${pos.symbol}`;
+    if (seen.has(key)) continue; seen.add(key);
+    const pr = resolvePrice(key);
+    if (!pr || staleDays(pr.at) > 5) tasks.push({ key, mkt: pos.market, sym: pos.symbol, pos });
+  }
+  let ok = 0;
+  for (const t of tasks.slice(0, 12)) { // 單次最多補 12 檔,避免打爆免費 API
+    try {
+      const r = await lookupAsset(t.mkt, t.sym);
+      if (r.price != null) { state.manualPrices[t.key] = { price: r.price, at: new Date().toISOString() }; ok++; }
+      if (r.name) for (const pf of state.portfolios) for (const p2 of pf.positions) {
+        if (`${p2.market}:${p2.symbol}` === t.key && !p2.name) p2.name = r.name;
+      }
+    } catch {}
+  }
+  if (ok) { save(); render(); toast(`已自動補查 ${ok} 檔最新報價`); }
+}
+
 /* ---------------- 路由與渲染 ---------------- */
 const VIEWS = { overview: vOverview, dashboard: vDashboard, rebalance: vRebalance, holdings: vHoldings, targets: vTargets, settings: vSettings };
 
@@ -942,4 +965,4 @@ document.getElementById("btnRefreshPrices").addEventListener("click", () => load
 load();
 renderSwitcher();
 render();
-loadFeed(false);
+loadFeed(false).then(() => autoBackfillPrices());
