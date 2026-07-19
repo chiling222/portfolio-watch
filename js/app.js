@@ -168,7 +168,9 @@ function makeRow(key, targetPct, value, total, s, agg, untargeted = false) {
   const devAbs = actualPct - targetPct;
   const devRel = targetPct > 0 ? devAbs / targetPct * 100 : (actualPct > 0 ? 100 : 0);
   let status = "ok";
-  if (targetPct > 0 || untargeted) {
+  if (targetPct > 0 && value === 0) {
+    status = "pending"; // 尚未建倉:不列入警示,但保留在再平衡買進建議中
+  } else if (targetPct > 0 || untargeted) {
     const hitAbs = Math.abs(devAbs) > s.tolAbs;
     const hitRel = Math.abs(devRel) > s.tolRel;
     if (hitAbs && hitRel) status = "alert";
@@ -429,9 +431,10 @@ function rulerRow(r, c) {
   const tgtX = Math.min(100, r.targetPct / scaleMax * 100);
   const bandL = Math.max(0, (r.targetPct - state.settings.tolAbs) / scaleMax * 100);
   const bandR = Math.min(100, (r.targetPct + state.settings.tolAbs) / scaleMax * 100);
-  const cls = r.status === "ok" ? "" : (r.devAbs > 0 ? "over" : "under");
-  const devColor = r.status === "ok" ? "" : (r.devAbs > 0 ? "pos" : "neg");
+  const cls = (r.status === "ok" || r.status === "pending") ? "" : (r.devAbs > 0 ? "over" : "under");
+  const devColor = (r.status === "ok" || r.status === "pending") ? "" : (r.devAbs > 0 ? "pos" : "neg");
   const badge = r.untargeted ? `<span class="badge gold">未設目標</span>` :
+                r.status === "pending" ? `<span class="badge gold">尚未建倉</span>` :
                 r.status === "alert" ? `<span class="badge alert">超出區間</span>` : "";
   const pr = r.key !== CASH_KEY ? resolvePrice(r.key) : null;
   const stale = pr && staleDays(pr.at) > 3 ? `・價格已 ${staleDays(pr.at)} 天` : "";
@@ -858,14 +861,19 @@ const actions = {
     });
   },
 
-  copySymbols() {
+  async copySymbols() {
     const tw = new Set(), us = new Set();
+    try { // 先併入 repo 現有清單,輸出為聯集,避免覆蓋掉通用清單
+      const cur = await fetch(`data/symbols.json?t=${Date.now()}`, { cache: "no-store" }).then(r => r.json());
+      for (const s of cur.tw || []) tw.add(s);
+      for (const s of cur.us || []) us.add(s);
+    } catch {}
     for (const pf of state.portfolios) for (const pos of pf.positions) {
       if (pos.market === "TW") tw.add(pos.symbol);
       else if (pos.market === "US") us.add(pos.symbol.toUpperCase());
     }
     const json = JSON.stringify({
-      "_說明": "要自動抓價的代號清單。台股放 tw(上市與上櫃皆可),美股放 us。修改後 push,下次排程或手動觸發 Actions 即生效。",
+      "_說明": "通用廣覆蓋報價清單:台股權值/熱門股+主流ETF+債券ETF、美股大型股+常見ETF。持有標的若不在此清單,App 會自動即時補查,亦可自行加入代號。",
       tw: [...tw].sort(), us: [...us].sort(),
     }, null, 2);
     navigator.clipboard.writeText(json)
@@ -912,12 +920,20 @@ const actions = {
 /** 自動補查:持有但缺報價或報價過期(>5天)的標的,靜默用即時查詢補上 */
 async function autoBackfillPrices() {
   const seen = new Set(), tasks = [];
-  for (const pf of state.portfolios) for (const pos of pf.positions) {
-    if (pos.market !== "TW" && pos.market !== "US") continue;
-    const key = `${pos.market}:${pos.symbol}`;
-    if (seen.has(key)) continue; seen.add(key);
+  const addTask = (mkt, sym) => {
+    if (mkt !== "TW" && mkt !== "US") return;
+    const key = `${mkt}:${sym}`;
+    if (seen.has(key)) return; seen.add(key);
     const pr = resolvePrice(key);
-    if (!pr || staleDays(pr.at) > 5) tasks.push({ key, mkt: pos.market, sym: pos.symbol, pos });
+    if (!pr || staleDays(pr.at) > 5) tasks.push({ key, mkt, sym });
+  };
+  for (const pf of state.portfolios) {
+    for (const pos of pf.positions) addTask(pos.market, pos.symbol);
+    for (const t of (pf.targets || [])) {         // 目標清單也補查(含尚未建倉者,再平衡才算得出股數)
+      if (t.key === CASH_KEY) continue;
+      const [mkt, sym] = t.key.split(":");
+      addTask(mkt, sym);
+    }
   }
   let ok = 0;
   for (const t of tasks.slice(0, 12)) { // 單次最多補 12 檔,避免打爆免費 API
