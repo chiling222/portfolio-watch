@@ -387,6 +387,18 @@ function confirmDanger(msg, onOk) {
   document.getElementById("modalBody").innerHTML = `<p style="font-size:14px;line-height:1.7">${esc(msg)}</p>`;
 }
 
+function planAlertStrips(p) {
+  let html = "";
+  for (const h of triggeredPlanLevels(p)) {
+    const buy = h.side === "buy";
+    html += `<div class="alert-strip gold" style="align-items:center;justify-content:space-between">
+      <span>💰 到價:${esc(assetLabel(h.key).name)} 現價 ${nf2.format(h.cur)} ${buy ? "≤ 買進價" : "≥ 賣出價"} ${nf2.format(h.level.price)},計畫${buy ? "買" : "賣"} ${nf0.format(h.level.qty)} 股(約 ${fmtMoney(h.level.qty * h.cur, MARKETS[h.key.split(":")[0]]?.currency)})</span>
+      <button class="btn small" data-act="planDone" data-key="${esc(h.key)}" data-side="${h.side}" data-i="${h.i}" style="flex:0 0 auto">已執行</button>
+    </div>`;
+  }
+  return html;
+}
+
 /* ---------------- 視圖:儀表板 ---------------- */
 function vDashboard() {
   const p = activePortfolio();
@@ -405,12 +417,7 @@ function vDashboard() {
   if (c.alerts.length) {
     html += `<div class="alert-strip">🔔 ${c.alerts.length} 檔偏離超出容忍區間:${c.alerts.map(r => `${esc(assetLabel(r.key).name)} ${fmtPct(r.devAbs, true)}`).join("、")}</div>`;
   }
-  for (const h of triggeredPlanLevels(p)) {
-    html += `<div class="alert-strip gold" style="align-items:center;justify-content:space-between">
-      <span>💰 到價:${esc(assetLabel(h.key).name)} 現價 ${nf2.format(h.cur)} ≤ 買進價 ${nf2.format(h.level.price)},計畫買 ${nf0.format(h.level.qty)} 股(約 ${fmtMoney(h.level.qty * h.cur, MARKETS[h.key.split(":")[0]]?.currency)})</span>
-      <button class="btn small" data-act="planDone" data-key="${esc(h.key)}" data-i="${h.i}" style="flex:0 0 auto">已執行</button>
-    </div>`;
-  }
+  html += planAlertStrips(p);
 
   html += `<div class="stat-grid">
     <div class="stat"><div class="k">總市值</div><div class="v num">${fmtMoney(c.total)}</div></div>
@@ -499,10 +506,51 @@ function vRebalance() {
           <div class="v num">${fmtMoney(t.amtNative, t.currency)}</div>
           <div class="sub num">執行後 ${fmtPct(t.afterPct)} → 目標 ${fmtPct(t.targetPct)}</div>
         </div>
+        <div class="row-actions">
+          <button class="btn small" data-act="editPlan" data-key="${esc(t.key)}" data-side="${t.buy ? "buy" : "sell"}" title="設定分批到價">分批</button>
+        </div>
       </div>`;
     }).join("") + `</div>`;
     html += `<div class="card" style="display:flex;justify-content:space-between;font-size:13px">
       <span>預估交易成本(手續費/稅)</span><span class="num">${fmtMoney(plan.totalFee)}</span></div>`;
+  }
+  html += planAlertStrips(p);
+  // 進行中的買賣計畫
+  const planKeys = new Set([...Object.keys(p.buyPlans || {}), ...Object.keys(p.sellPlans || {})]);
+  html += `<div class="section-title"><span>買賣計畫(分批到價)</span>
+    <button class="btn small" data-act="addPlan">+ 新增計畫</button></div>`;
+  if (!planKeys.size) {
+    html += `<div class="card"><div class="empty">尚無買賣計畫。<br>按上方建議列的「分批」或「+ 新增計畫」,為任何標的設定最多 5 檔到價價位。</div></div>`;
+  } else {
+    const hits = triggeredPlanLevels(p);
+    const isHit = (key, side, i) => hits.some(h => h.key === key && h.side === side && h.i === i);
+    html += `<div class="card flat">`;
+    for (const key of planKeys) {
+      for (const side of ["buy", "sell"]) {
+        const levels = (side === "buy" ? p.buyPlans : p.sellPlans)?.[key];
+        if (!levels?.length) continue;
+        const lbl = assetLabel(key);
+        const pr = resolvePrice(key);
+        const chips = levels.map((lv, i) => {
+          const st = lv.done ? "✓已執行" : isHit(key, side, i) ? "🔔到價" : "未到";
+          const color = lv.done ? "var(--muted)" : isHit(key, side, i) ? "var(--gold)" : "inherit";
+          return `<span style="color:${color}">${nf2.format(lv.price)} × ${nf0.format(lv.qty)}股(${st})</span>`;
+        }).join(" ・ ");
+        html += `<div class="list-row">
+          <div class="list-main">
+            <div class="list-title">${esc(lbl.name)}
+              <span class="badge ${side === "buy" ? "" : "alert"}" style="${side === "buy" ? "color:var(--under);border-color:var(--under)" : ""}">${side === "buy" ? "買進" : "賣出"}計畫</span>
+              ${pr ? `<span class="sym num" style="color:var(--muted);font-size:0.667rem">現價 ${nf2.format(pr.price)}</span>` : ""}</div>
+            <div class="list-sub num">${chips}</div>
+          </div>
+          <div class="row-actions">
+            <button class="btn small" data-act="editPlan" data-key="${esc(key)}" data-side="${side}">編</button>
+            <button class="btn small danger" data-act="delPlan" data-key="${esc(key)}" data-side="${side}">刪</button>
+          </div>
+        </div>`;
+      }
+    }
+    html += `</div>`;
   }
   html += `<p class="inline-note">建議依「回到目標比例」計算,已考慮最小交易單位${state.settings.allowOddLot ? "(台股允許零股)" : "(台股以整張計)"}與現金幣別歸屬帳戶。實際下單請自行確認價格與費率;本工具僅供配置參考,不構成投資建議。</p>`;
   return html;
@@ -599,10 +647,8 @@ function vTargets() {
     return `<div class="list-row">
       <div class="list-main"><div class="list-title">${esc(lbl.name)}
         <span class="sym num" style="color:var(--muted);font-size:12px">${esc(lbl.sym)}</span></div></div>
-      <div class="list-val"><div class="v num">${nf2.format(t.pct)}%</div>
-        ${(p.buyPlans?.[t.key]?.filter(l=>!l.done).length) ? `<div class="sub num" style="color:var(--gold)">買進計畫 ${p.buyPlans[t.key].filter(l=>!l.done).length} 檔</div>` : ""}</div>
+      <div class="list-val"><div class="v num">${nf2.format(t.pct)}%</div></div>
       <div class="row-actions">
-        ${t.key !== "CASH" ? `<button class="btn small" data-act="buyPlan" data-key="${esc(t.key)}">計</button>` : ""}
         <button class="btn small" data-act="editTarget" data-i="${i}">編</button>
         <button class="btn small danger" data-act="delTarget" data-i="${i}">刪</button>
       </div>
@@ -853,36 +899,61 @@ const actions = {
     p.targets.splice(+el.dataset.i, 1); save(); render();
   },
 
-  buyPlan(el) {
+  _planForm(key, side) {
     const p = activePortfolio();
-    const key = el.dataset.key;
-    p.buyPlans = p.buyPlans || {};
-    const cur = p.buyPlans[key] || [];
+    const store = side === "buy" ? "buyPlans" : "sellPlans";
+    p[store] = p[store] || {};
+    const cur = p[store][key] || [];
     const pr = resolvePrice(key);
+    const verb = side === "buy" ? "買進" : "賣出";
+    // 若再平衡有此檔建議,顯示參考股數
+    const sug = planRebalance(p, "both", rebalanceBasis).trades.find(t => t.key === key && t.buy === (side === "buy"));
     const fields = [];
     for (let i = 0; i < 5; i++) {
       fields.push({ id: `r${i}`, type: "row", fields: [
-        { id: `p${i}`, label: `第 ${i + 1} 檔買進價${cur[i]?.done ? "(已執行)" : ""}`, type: "number", value: cur[i]?.price ?? "", step: "any", placeholder: "留空不用" },
+        { id: `p${i}`, label: `第 ${i + 1} 檔${verb}價${cur[i]?.done ? "(已執行)" : ""}`, type: "number", value: cur[i]?.price ?? "", step: "any", placeholder: "留空不用" },
         { id: `q${i}`, label: "股數", type: "number", value: cur[i]?.qty ?? "", step: "any" }] });
     }
-    openModal(`買進計畫 — ${assetLabel(key).name}${pr ? "(現價 " + nf2.format(pr.price) + ")" : ""}`, fields, v => {
+    openModal(`${verb}計畫 — ${assetLabel(key).name}${pr ? "(現價 " + nf2.format(pr.price) + ")" : ""}${sug ? ",建議${verb} " + nf0.format(sug.qty) + " 股" : ""}`.replace("${verb}", verb), fields, v => {
       const levels = [];
       for (let i = 0; i < 5; i++) {
         const price = +v[`p${i}`], qty = +v[`q${i}`];
         if (price > 0 && qty > 0) levels.push({ price, qty, done: cur[i]?.price === price ? (cur[i]?.done || false) : false });
       }
-      levels.sort((a, b) => b.price - a.price);
-      if (levels.length) p.buyPlans[key] = levels; else delete p.buyPlans[key];
+      levels.sort((a, b) => side === "buy" ? b.price - a.price : a.price - b.price);
+      if (levels.length) p[store][key] = levels; else delete p[store][key];
       save(); render();
       if (levels.length && typeof Notification !== "undefined" && Notification.permission === "default") {
         Notification.requestPermission();
       }
-      toast(levels.length ? `已設定 ${levels.length} 檔買進價,到價時開啟 App 會提醒` : "已清除買進計畫");
+      toast(levels.length ? `已設定 ${levels.length} 檔${verb}價,到價時開啟 App 會提醒` : `已清除${verb}計畫`);
     });
+  },
+  editPlan(el) { actions._planForm(el.dataset.key, el.dataset.side); },
+  delPlan(el) {
+    const p = activePortfolio();
+    const store = el.dataset.side === "buy" ? "buyPlans" : "sellPlans";
+    confirmDanger(`確定刪除此${el.dataset.side === "buy" ? "買進" : "賣出"}計畫?`, () => {
+      delete p[store]?.[el.dataset.key]; save(); render();
+    });
+  },
+  addPlan() {
+    const p = activePortfolio();
+    const keys = new Set();
+    for (const t of p.targets) if (t.key !== CASH_KEY) keys.add(t.key);
+    for (const pos of p.positions) keys.add(`${pos.market}:${pos.symbol}`);
+    if (!keys.size) { toast("請先設定目標或持倉"); return; }
+    openModal("新增買賣計畫", [
+      { id: "key", label: "標的", type: "select", value: [...keys][0],
+        options: [...keys].map(k => ({ value: k, label: `${assetLabel(k).name}(${assetLabel(k).sym})` })) },
+      { id: "side", label: "方向", type: "select", value: "buy",
+        options: [{ value: "buy", label: "買進計畫(現價跌到設定價時提醒)" }, { value: "sell", label: "賣出計畫(現價漲到設定價時提醒)" }] },
+    ], v => { setTimeout(() => actions._planForm(v.key, v.side), 50); }, "下一步");
   },
   planDone(el) {
     const p = activePortfolio();
-    const lv = p.buyPlans?.[el.dataset.key]?.[+el.dataset.i];
+    const store = el.dataset.side === "sell" ? "sellPlans" : "buyPlans";
+    const lv = p[store]?.[el.dataset.key]?.[+el.dataset.i];
     if (lv) { lv.done = true; save(); render(); toast("已標記執行,此檔不再提醒"); }
   },
   editTol() {
@@ -1000,18 +1071,22 @@ async function autoBackfillPrices() {
 }
 
 /* ---------------- 買進計畫(分批到價) ---------------- */
-/** 回傳目前組合所有已觸價且未執行的層級 */
+/** 回傳目前組合所有已觸價且未執行的層級(買:現價≤設定價;賣:現價≥設定價) */
 function triggeredPlanLevels(p) {
   const out = [];
-  for (const [key, levels] of Object.entries(p.buyPlans || {})) {
-    const pr = resolvePrice(key);
-    if (!pr) continue;
-    levels.forEach((lv, i) => {
-      if (!lv.done && lv.price > 0 && pr.price <= lv.price) {
-        out.push({ key, i, level: lv, cur: pr.price });
-      }
-    });
-  }
+  const scan = (plans, side) => {
+    for (const [key, levels] of Object.entries(plans || {})) {
+      const pr = resolvePrice(key);
+      if (!pr) continue;
+      levels.forEach((lv, i) => {
+        if (lv.done || !(lv.price > 0)) return;
+        const hit = side === "buy" ? pr.price <= lv.price : pr.price >= lv.price;
+        if (hit) out.push({ key, i, side, level: lv, cur: pr.price });
+      });
+    }
+  };
+  scan(p.buyPlans, "buy");
+  scan(p.sellPlans, "sell");
   return out;
 }
 /** 報價更新後檢查,對「今天還沒通知過」的觸價層級發瀏覽器通知 */
@@ -1024,13 +1099,14 @@ function checkPlanNotifications() {
   const today = new Date().toISOString().slice(0, 10);
   let dirty = false;
   for (const h of hits) {
-    const nk = `${p.id}:${h.key}@${h.level.price}`;
+    const nk = `${p.id}:${h.side}:${h.key}@${h.level.price}`;
     if (state.planNotified[nk] === today) continue;
     state.planNotified[nk] = today; dirty = true;
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       try {
+        const verb = h.side === "buy" ? "買進" : "賣出";
         new Notification("到價提醒 — Portfolio Watch", {
-          body: `${assetLabel(h.key).name} 現價 ${nf2.format(h.cur)},觸及買進價 ${nf2.format(h.level.price)}(計畫買 ${nf0.format(h.level.qty)} 股)`,
+          body: `${assetLabel(h.key).name} 現價 ${nf2.format(h.cur)},觸及${verb}價 ${nf2.format(h.level.price)}(計畫${h.side === "buy" ? "買" : "賣"} ${nf0.format(h.level.qty)} 股)`,
         });
       } catch {}
     }
