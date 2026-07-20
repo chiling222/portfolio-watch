@@ -218,6 +218,7 @@ function planRebalance(p, mode, basis = "market") {
     }
     return { key: row.key, buy, qty, amtNative, amtBase, fee, currency: mkt.currency,
              price: pr.price, account: account?.name || "—",
+             beforePct: row.value / base * 100,
              afterPct: (row.value + (buy ? amtBase : -amtBase)) / base * 100, targetPct: row.targetPct };
   };
 
@@ -504,7 +505,7 @@ function vRebalance() {
         </div>
         <div class="list-val">
           <div class="v num">${fmtMoney(t.amtNative, t.currency)}</div>
-          <div class="sub num">執行後 ${fmtPct(t.afterPct)} → 目標 ${fmtPct(t.targetPct)}</div>
+          <div class="sub num">實際 ${fmtPct(t.beforePct)} → 執行後 ${fmtPct(t.afterPct)} → 目標 ${fmtPct(t.targetPct)}</div>
         </div>
         <div class="row-actions">
           <button class="btn small" data-act="editPlan" data-key="${esc(t.key)}" data-side="${t.buy ? "buy" : "sell"}" title="設定分批到價">分批</button>
