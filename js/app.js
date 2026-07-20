@@ -527,7 +527,8 @@ function vRebalance() {
     html += `<div class="card flat">`;
     for (const key of planKeys) {
       for (const side of ["buy", "sell"]) {
-        const levels = (side === "buy" ? p.buyPlans : p.sellPlans)?.[key];
+        const plan = getPlan(p, side, key);
+        const levels = plan?.levels;
         if (!levels?.length) continue;
         const lbl = assetLabel(key);
         const pr = resolvePrice(key);
@@ -903,31 +904,94 @@ const actions = {
     const p = activePortfolio();
     const store = side === "buy" ? "buyPlans" : "sellPlans";
     p[store] = p[store] || {};
-    const cur = p[store][key] || [];
+    const plan = getPlan(p, side, key) || { total: null, levels: [] };
+    const cur = plan.levels;
     const pr = resolvePrice(key);
+    const mktId = key.split(":")[0];
+    const mkt = MARKETS[mktId] || MARKETS.OTHER;
     const verb = side === "buy" ? "買進" : "賣出";
-    // 若再平衡有此檔建議,顯示參考股數
-    const sug = planRebalance(p, "both", rebalanceBasis).trades.find(t => t.key === key && t.buy === (side === "buy"));
+    // 已持有
+    let heldQty = 0;
+    for (const pos of p.positions) if (`${pos.market}:${pos.symbol}` === key) heldQty += pos.qty;
+    const heldVal = pr ? heldQty * pr.price : 0; // 原幣
+    // 買進預設總額:目標比例 × 計畫規模(換算原幣)
+    const t = p.targets.find(x => x.key === key);
+    const fx = resolveFx(mkt.currency).rate;
+    const defaultTotal = plan.total ?? (t && p.plannedCapital > 0 ? Math.round(t.pct / 100 * p.plannedCapital / fx) : "");
     const fields = [];
+    if (side === "buy") {
+      fields.push({ id: "total", label: `預計投入本標的總金額(${mkt.currency})`, type: "number",
+        value: defaultTotal, step: "any",
+        hint: `已持有市值約 ${fmtMoney(heldVal, mkt.currency)};剩餘 = 總額 − 已持有,按各檔比例換算股數` });
+    }
     for (let i = 0; i < 5; i++) {
       fields.push({ id: `r${i}`, type: "row", fields: [
         { id: `p${i}`, label: `第 ${i + 1} 檔${verb}價${cur[i]?.done ? "(已執行)" : ""}`, type: "number", value: cur[i]?.price ?? "", step: "any", placeholder: "留空不用" },
-        { id: `q${i}`, label: "股數", type: "number", value: cur[i]?.qty ?? "", step: "any" }] });
+        { id: `c${i}`, label: side === "buy" ? "比例%(佔剩餘金額)" : "比例%(佔持有股數)", type: "number", value: cur[i]?.pct ?? "", step: "any" }] });
     }
-    openModal(`${verb}計畫 — ${assetLabel(key).name}${pr ? "(現價 " + nf2.format(pr.price) + ")" : ""}${sug ? ",建議${verb} " + nf0.format(sug.qty) + " 股" : ""}`.replace("${verb}", verb), fields, v => {
+    const calcQty = (price, pct, remain) => {
+      if (!(price > 0) || !(pct > 0)) return 0;
+      const q = side === "buy" ? remain * pct / 100 / price : heldQty * pct / 100;
+      return roundQty(q, mktId);
+    };
+    openModal(`${verb}計畫 — ${assetLabel(key).name}${pr ? "(現價 " + nf2.format(pr.price) + ")" : ""}`, fields, v => {
+      const total = side === "buy" ? (+v.total || 0) : null;
+      const remain = side === "buy" ? Math.max(0, total - heldVal) : 0;
       const levels = [];
       for (let i = 0; i < 5; i++) {
-        const price = +v[`p${i}`], qty = +v[`q${i}`];
-        if (price > 0 && qty > 0) levels.push({ price, qty, done: cur[i]?.price === price ? (cur[i]?.done || false) : false });
+        const price = +v[`p${i}`], pct = +v[`c${i}`];
+        const qty = calcQty(price, pct, remain);
+        if (price > 0 && pct > 0 && qty > 0) {
+          levels.push({ price, pct, qty, done: cur.find(l => l.price === price)?.done || false });
+        }
       }
       levels.sort((a, b) => side === "buy" ? b.price - a.price : a.price - b.price);
-      if (levels.length) p[store][key] = levels; else delete p[store][key];
+      if (levels.length) p[store][key] = { total, levels };
+      else delete p[store][key];
       save(); render();
       if (levels.length && typeof Notification !== "undefined" && Notification.permission === "default") {
         Notification.requestPermission();
       }
       toast(levels.length ? `已設定 ${levels.length} 檔${verb}價,到價時開啟 App 會提醒` : `已清除${verb}計畫`);
     });
+    // ---- 即時換算股數 ----
+    const body = document.getElementById("modalBody");
+    for (let i = 0; i < 5; i++) {
+      const row = document.getElementById(`f_p${i}`)?.closest(".field-row");
+      if (row && !document.getElementById(`hint_${i}`)) {
+        const d = document.createElement("div");
+        d.id = `hint_${i}`; d.className = "field-hint";
+        row.after(d);
+      }
+    }
+    if (!document.getElementById("plan_sum")) {
+      const sd = document.createElement("div");
+      sd.id = "plan_sum"; sd.className = "field-hint";
+      sd.style.cssText = "color:var(--gold);font-weight:600;margin-top:2px";
+      body.prepend(sd);
+    }
+    const recalc = () => {
+      const total = side === "buy" ? (+document.getElementById("f_total")?.value || 0) : 0;
+      const remain = side === "buy" ? Math.max(0, total - heldVal) : 0;
+      let sumPct = 0, sumAmt = 0;
+      for (let i = 0; i < 5; i++) {
+        const price = +document.getElementById(`f_p${i}`)?.value || 0;
+        const pct = +document.getElementById(`f_c${i}`)?.value || 0;
+        const hint = document.getElementById(`hint_${i}`);
+        const qty = calcQty(price, pct, remain);
+        if (qty > 0) {
+          sumPct += pct; sumAmt += qty * price;
+          hint.textContent = `→ 約買 ${nf0.format(qty)} 股,金額 ${fmtMoney(qty * price, mkt.currency)}`;
+          if (side === "sell") hint.textContent = `→ 約賣 ${nf0.format(qty)} 股,金額 ${fmtMoney(qty * price, mkt.currency)}`;
+        } else if (hint) hint.textContent = "";
+      }
+      const sd = document.getElementById("plan_sum");
+      if (sd) sd.textContent = side === "buy"
+        ? `剩餘可分配 ${fmtMoney(remain, mkt.currency)} ・ 已分配 ${nf2.format(sumPct)}%(${fmtMoney(sumAmt, mkt.currency)})`
+        : `持有 ${nf0.format(heldQty)} 股 ・ 已分配 ${nf2.format(sumPct)}%`;
+    };
+    body.addEventListener("input", recalc);
+    recalc();
   },
   editPlan(el) { actions._planForm(el.dataset.key, el.dataset.side); },
   delPlan(el) {
@@ -952,8 +1016,8 @@ const actions = {
   },
   planDone(el) {
     const p = activePortfolio();
-    const store = el.dataset.side === "sell" ? "sellPlans" : "buyPlans";
-    const lv = p[store]?.[el.dataset.key]?.[+el.dataset.i];
+    const plan = getPlan(p, el.dataset.side === "sell" ? "sell" : "buy", el.dataset.key);
+    const lv = plan?.levels?.[+el.dataset.i];
     if (lv) { lv.done = true; save(); render(); toast("已標記執行,此檔不再提醒"); }
   },
   editTol() {
@@ -1070,14 +1134,28 @@ async function autoBackfillPrices() {
   if (ok) { save(); render(); toast(`已自動補查 ${ok} 檔最新報價`); }
 }
 
-/* ---------------- 買進計畫(分批到價) ---------------- */
+/* ---------------- 買賣計畫(分批到價) ---------------- */
+/** 讀取計畫並正規化:舊格式為陣列,新格式為 {total, levels} */
+function getPlan(p, side, key) {
+  const raw = (side === "buy" ? p.buyPlans : p.sellPlans)?.[key];
+  if (!raw) return null;
+  return Array.isArray(raw) ? { total: null, levels: raw } : raw;
+}
+/** 依市場規則捨入股數 */
+function roundQty(qty, mktId) {
+  const s = state.settings;
+  if (mktId === "TW" && !s.allowOddLot) return Math.floor(qty / 1000) * 1000;
+  const dec = (MARKETS[mktId] || MARKETS.OTHER).qtyDec;
+  return dec > 0 ? Math.floor(qty * 10 ** dec) / 10 ** dec : Math.floor(qty);
+}
 /** 回傳目前組合所有已觸價且未執行的層級(買:現價≤設定價;賣:現價≥設定價) */
 function triggeredPlanLevels(p) {
   const out = [];
   const scan = (plans, side) => {
-    for (const [key, levels] of Object.entries(plans || {})) {
+    for (const [key, raw] of Object.entries(plans || {})) {
       const pr = resolvePrice(key);
       if (!pr) continue;
+      const levels = Array.isArray(raw) ? raw : (raw.levels || []);
       levels.forEach((lv, i) => {
         if (lv.done || !(lv.price > 0)) return;
         const hit = side === "buy" ? pr.price <= lv.price : pr.price >= lv.price;
