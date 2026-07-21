@@ -1279,6 +1279,7 @@ function checkPlanNotifications() {
 const VIEWS = { overview: vOverview, dashboard: vDashboard, rebalance: vRebalance, holdings: vHoldings, targets: vTargets, settings: vSettings };
 
 function render() {
+  renderSwitcher();
   document.getElementById("view").innerHTML = VIEWS[currentView]();
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.view === currentView));
 }
