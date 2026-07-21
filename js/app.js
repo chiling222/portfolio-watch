@@ -45,7 +45,7 @@ function defaultState() {
     manualPrices: {},    // { "TW:2330": {price, at} }
     feedCache: null,     // 上次成功抓到的 prices.json(離線備援)
     portfolios: [{
-      id: pid, name: "我的組合", plannedCapital: 1000000,
+      id: pid, name: "我的組合", type: "core", plannedCapital: 1000000,
       accounts: [{ id: aid, name: "預設帳戶", cash: { TWD: 0 } }],
       targets: [{ key: CASH_KEY, pct: 10 }],
       positions: [],
@@ -112,8 +112,9 @@ function assetLabel(key) {
 /** 計算單一組合的完整快照 */
 function compute(p) {
   const s = state.settings;
-  // 各資產市值(合併所有帳戶)
-  const byKey = new Map();
+  // 各資產市值(合併所有帳戶)。衛星組中標記「長抱」者列為 hold-only,不參與配置比例。
+  const byKey = new Map();       // 參與配置的部位
+  const holdOnly = new Map();    // 僅列管(衛星長抱)
   let missingPrice = [];
   for (const pos of p.positions) {
     const key = `${pos.market}:${pos.symbol}`;
@@ -124,9 +125,11 @@ function compute(p) {
     const valueNative = pos.qty * price;
     const value = toBase(valueNative, mkt.currency);
     const cost = toBase(pos.qty * pos.avgCost, mkt.currency);
-    const cur = byKey.get(key) || { key, value: 0, cost: 0, qty: 0, price: pr, currency: mkt.currency };
+    const isHoldOnly = p.type === "satellite" && pos.tag === "hold";
+    const target = isHoldOnly ? holdOnly : byKey;
+    const cur = target.get(key) || { key, value: 0, cost: 0, qty: 0, price: pr, currency: mkt.currency, tag: pos.tag };
     cur.value += value; cur.cost += cost; cur.qty += pos.qty;
-    byKey.set(key, cur);
+    target.set(key, cur);
   }
   // 現金(各帳戶各幣別)
   let cashValue = 0, cashByCur = {};
@@ -159,8 +162,11 @@ function compute(p) {
 
   const targetSum = p.targets.reduce((a, t) => a + (+t.pct || 0), 0);
   const alerts = rows.filter(r => r.status === "alert");
-  return { total, stockValue, cashValue, cashByCur, totalCost, rows, byKey,
+  let holdOnlyValue = 0, holdOnlyCost = 0;
+  for (const h of holdOnly.values()) { holdOnlyValue += h.value; holdOnlyCost += h.cost; }
+  return { total, stockValue, cashValue, cashByCur, totalCost, rows, byKey, holdOnly,
            targetSum, alerts, missingPrice,
+           holdOnlyValue, holdOnlyPnl: holdOnlyValue - holdOnlyCost,
            pnl: stockValue - totalCost };
 }
 
@@ -432,7 +438,21 @@ function vDashboard() {
       <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div></div>
   </div>`;
 
-  html += `<div class="section-title"><span>配置偏離監控</span><span style="letter-spacing:0;font-weight:400">▲ 金色為目標</span></div>`;
+  if (p.type === "satellite") {
+    const soldPnlPct = (c.stockValue - c.totalCost) !== 0 && c.totalCost > 0 ? (c.stockValue - c.totalCost) / c.totalCost * 100 : 0;
+    if (c.holdOnlyValue > 0) {
+      const hoPct = c.holdOnlyCost > 0 ? c.holdOnlyPnl / c.holdOnlyCost * 100 : 0;
+      html += `<div class="card" style="display:flex;justify-content:space-between;align-items:center">
+        <div><div style="font-size:12px;color:var(--muted)">長抱列管(不參與配置)</div>
+        <div class="num" style="font-size:16px;font-weight:600">${fmtMoney(c.holdOnlyValue)}</div></div>
+        <div style="text-align:right"><div style="font-size:12px;color:var(--muted)">未實現損益</div>
+        <div class="num ${c.holdOnlyPnl >= 0 ? "pos" : "neg"}" style="font-weight:700">${c.holdOnlyPnl >= 0 ? "+" : ""}${fmtMoney(c.holdOnlyPnl)}(${fmtPct(hoPct, true)})</div></div>
+      </div>`;
+    }
+    html += `<div class="section-title"><span>短打配置監控(佔規模 ${fmtMoney(p.plannedCapital)})</span><span style="letter-spacing:0;font-weight:400">▲ 金色為目標</span></div>`;
+  } else {
+    html += `<div class="section-title"><span>配置偏離監控</span><span style="letter-spacing:0;font-weight:400">▲ 金色為目標</span></div>`;
+  }
   if (!c.rows.length) {
     html += `<div class="card"><div class="empty">還沒有目標與持倉。<br>先到「目標」頁設定配置比例,再到「持倉」頁輸入部位。</div></div>`;
   } else {
@@ -607,10 +627,14 @@ function vHoldings() {
         const val = pr ? pos.qty * pr.price : 0;
         const pnl = pr ? (pr.price - pos.avgCost) * pos.qty : 0;
         const pnlPct = pos.avgCost > 0 && pr ? (pr.price / pos.avgCost - 1) * 100 : 0;
+        const tagBadge = p.type === "satellite"
+          ? (pos.tag === "hold" ? `<span class="badge gold">長抱</span>` : `<span class="badge" style="color:var(--ok);border-color:var(--ok)">短打</span>`)
+          : "";
         return `<div class="list-row">
           <div class="list-main">
             <div class="list-title">${esc(pos.name || pos.symbol)}
               <span class="sym num" style="color:var(--muted);font-size:12px">${esc(MARKETS[pos.market]?.label || pos.market)} ${esc(pos.symbol)}</span>
+              ${tagBadge}
               ${pr ? `<span class="badge">${pr.source === "manual" ? "手動價" : "自動價"}</span>` : `<span class="badge alert">無價格</span>`}
             </div>
             <div class="list-sub num">${fmtQty(pos.qty, pos.market)} ・ 成本 ${nf2.format(pos.avgCost)} ・ 現價 ${pr ? nf2.format(pr.price) : "—"}</div>
@@ -662,30 +686,58 @@ function vTargets() {
 
 /* ---------------- 視圖:總覽 ---------------- */
 function vOverview() {
-  let html = `<div class="section-title"><span>所有組合</span>
+  let html = `<div class="section-title"><span>資產全景</span>
     <button class="btn small" data-act="addPortfolio">+ 新組合</button></div>`;
-  let grand = 0;
-  html += state.portfolios.map(p => {
+  // 計算各組合總值與家庭合計
+  const parts = state.portfolios.map(p => {
     const c = compute(p);
-    grand += c.total;
+    const grand = c.total + (c.holdOnlyValue || 0);
+    return { p, c, grand };
+  });
+  const total = parts.reduce((a, x) => a + x.grand, 0);
+  const palette = ["#A87A1E", "#3B6FD4", "#1D9457", "#C9383E", "#7A5CA8", "#188F8F"];
+  // 堆疊佔比條
+  if (total > 0) {
+    let bar = "";
+    parts.forEach((x, i) => {
+      const w = x.grand / total * 100;
+      if (w > 0) bar += `<div style="width:${w}%;background:${palette[i % palette.length]}" title="${esc(x.p.name)}"></div>`;
+    });
+    html += `<div class="card">
+      <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;gap:1px">${bar}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:12px">${
+        parts.map((x, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <span style="width:10px;height:10px;border-radius:2px;background:${palette[i % palette.length]}"></span>
+          ${esc(x.p.name)} <span class="num" style="color:var(--muted)">${fmtPct(x.grand / total * 100)}</span></div>`).join("")
+      }</div>
+      <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <span style="font-weight:600">家庭資產合計</span>
+        <span class="num" style="font-weight:700;color:var(--gold)">${fmtMoney(total)}</span></div>
+    </div>`;
+  }
+  // 各組合卡片
+  html += `<div class="section-title"><span>各組合</span></div>`;
+  html += parts.map(({ p, c, grand }) => {
     const progress = p.plannedCapital > 0 ? Math.min(100, c.total / p.plannedCapital * 100) : 0;
     const pnlPct = c.totalCost > 0 ? c.pnl / c.totalCost * 100 : 0;
+    const typeBadge = p.type === "satellite"
+      ? `<span class="badge" style="color:var(--ok);border-color:var(--ok)">衛星</span>`
+      : `<span class="badge gold">核心</span>`;
     return `<div class="card" style="cursor:pointer" data-act="openPortfolio" data-id="${p.id}">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-        <div class="list-title" style="font-size:16px">${esc(p.name)}
-          ${c.alerts.length ? `<span class="badge alert">${c.alerts.length} 檔偏離</span>` : `<span class="badge">配置正常</span>`}</div>
-        <div class="num" style="font-size:17px;font-weight:600">${fmtMoney(c.total)}</div>
+        <div class="list-title" style="font-size:16px">${esc(p.name)} ${typeBadge}
+          ${c.alerts.length ? `<span class="badge alert">${c.alerts.length} 檔偏離</span>` : ""}</div>
+        <div class="num" style="font-size:17px;font-weight:600">${fmtMoney(grand)}</div>
       </div>
       <div class="list-sub num" style="display:flex;justify-content:space-between">
-        <span>損益 <span class="${c.pnl >= 0 ? "pos" : "neg"}">${c.pnl >= 0 ? "+" : ""}${nf0.format(c.pnl)} (${fmtPct(pnlPct, true)})</span></span>
+        <span>損益 <span class="${c.pnl >= 0 ? "pos" : "neg"}">${c.pnl >= 0 ? "+" : ""}${nf0.format(c.pnl)} (${fmtPct(pnlPct, true)})</span>
+          ${c.holdOnlyValue > 0 ? `<span style="color:var(--muted)"> ・ 含長抱 ${fmtMoney(c.holdOnlyValue)}</span>` : ""}</span>
         <span>投入 ${fmtPct(progress)} / ${fmtMoney(p.plannedCapital)}</span>
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
     </div>`;
   }).join("");
-  html += `<div class="card" style="display:flex;justify-content:space-between;border-color:var(--gold)">
-    <span>家庭資產合計</span><span class="num" style="font-weight:700;color:var(--gold)">${fmtMoney(grand)}</span></div>`;
-  html += `<p class="inline-note">各組合目標配置獨立,偏離監控不跨組合合併計算。點擊卡片切換至該組合。</p>`;
+  html += `<p class="inline-note">各組合目標配置獨立,偏離監控不跨組合合併。核心組看配置偏離,衛星組額外顯示損益與長抱/短打;長抱部位僅列管、不計入配置比例。</p>`;
   return html;
 }
 
@@ -739,12 +791,14 @@ function vSettings() {
 const actions = {
   addPortfolio() {
     openModal("新增組合", [
-      { id: "name", label: "組合名稱", value: "", required: true, placeholder: "例:兒子的組合" },
-      { id: "cap", label: "預計投入資金規模(TWD)", type: "number", value: 1000000, step: "any" },
+      { id: "name", label: "組合名稱", value: "", required: true, placeholder: "例:琦琦衛星組" },
+      { id: "type", label: "類型", type: "select", value: "core",
+        options: [{ value: "core", label: "核心(穩健配置,偏離監控+再平衡)" }, { value: "satellite", label: "衛星(個股進出,額外顯示損益與長抱/短打)" }] },
+      { id: "cap", label: "預計投入資金規模(TWD)", type: "number", value: 500000, step: "any" },
     ], v => {
       if (!v.name) return false;
       const pid = uid();
-      state.portfolios.push({ id: pid, name: v.name, plannedCapital: +v.cap || 0,
+      state.portfolios.push({ id: pid, name: v.name, type: v.type || "core", plannedCapital: +v.cap || 0,
         accounts: [{ id: uid(), name: "預設帳戶", cash: { TWD: 0 } }], targets: [{ key: CASH_KEY, pct: 10 }], positions: [] });
       state.activePortfolioId = pid; save(); switchView("targets");
       toast("組合已建立,先設定目標配置吧");
@@ -754,6 +808,8 @@ const actions = {
     const p = activePortfolio();
     openModal("編輯組合", [
       { id: "name", label: "組合名稱", value: p.name, required: true },
+      { id: "type", label: "類型", type: "select", value: p.type || "core",
+        options: [{ value: "core", label: "核心(穩健配置)" }, { value: "satellite", label: "衛星(個股進出)" }] },
       { id: "cap", label: "預計投入資金規模(TWD)", type: "number", value: p.plannedCapital, step: "any" },
       { id: "del", label: "刪除組合請輸入 DELETE", value: "", placeholder: "留空表示不刪除" },
     ], v => {
@@ -763,7 +819,7 @@ const actions = {
         state.activePortfolioId = state.portfolios[0].id;
         save(); switchView("overview"); toast("組合已刪除"); return;
       }
-      p.name = v.name; p.plannedCapital = +v.cap || 0; save(); render();
+      p.name = v.name; p.type = v.type || "core"; p.plannedCapital = +v.cap || 0; save(); render();
     });
   },
   openPortfolio(el) { state.activePortfolioId = el.dataset.id; save(); switchView("dashboard"); },
