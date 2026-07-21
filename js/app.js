@@ -43,6 +43,7 @@ function defaultState() {
     settings: { ...DEFAULT_SETTINGS },
     fxManual: {},        // { USD: {rate, at} }
     manualPrices: {},    // { "TW:2330": {price, at} }
+    assetNames: {},      // { "TW:2049": "上銀" } 查詢到的名稱快取(供尚未建倉的目標顯示)
     feedCache: null,     // 上次成功抓到的 prices.json(離線備援)
     portfolios: [{
       id: pid, name: "我的組合", type: "core", plannedCapital: 1000000,
@@ -106,7 +107,7 @@ function assetLabel(key) {
   const [mkt, sym] = key.split(":");
   const p = activePortfolio()?.positions.find(x => x.market === mkt && x.symbol === sym);
   const fd = feedPrice(key);
-  return { name: p?.name || fd?.name || sym, sym: `${MARKETS[mkt]?.label || mkt} ${sym}` };
+  return { name: p?.name || fd?.name || state.assetNames?.[key] || sym, sym: `${MARKETS[mkt]?.label || mkt} ${sym}` };
 }
 
 /** 計算單一組合的完整快照 */
@@ -294,7 +295,15 @@ async function lookupAsset(mkt, sym) {
   let name = null, price = null;
   if (mkt === "TW") {
     try { const info = await finmind({ dataset: "TaiwanStockInfo", data_id: sym }); name = info[0]?.stock_name || null; } catch {}
-    try { const rows = await finmind({ dataset: "TaiwanStockPrice", data_id: sym, start_date: start }); price = +rows[rows.length - 1].close || null; } catch {}
+    try {
+      const rows = await finmind({ dataset: "TaiwanStockPrice", data_id: sym, start_date: start });
+      const last = rows[rows.length - 1];
+      price = +last.close || null;
+      // 備援:主名稱查詢失敗時,價格資料列有時也帶股名
+      if (!name) name = last.stock_name || last.Name || null;
+    } catch {}
+    // 最後備援:報價 feed 內的名稱
+    if (!name) { const fd = feedPrice(`TW:${sym}`); if (fd?.name && fd.name !== sym) name = fd.name; }
   } else if (mkt === "US") {
     const id = sym.toUpperCase();
     try {
@@ -675,6 +684,7 @@ function vTargets() {
         <span class="sym num" style="color:var(--muted);font-size:12px">${esc(lbl.sym)}</span></div></div>
       <div class="list-val"><div class="v num">${nf2.format(t.pct)}%</div></div>
       <div class="row-actions">
+        ${t.key !== "CASH" ? `<button class="btn small" data-act="lookupTarget" data-key="${esc(t.key)}">查</button>` : ""}
         <button class="btn small" data-act="editTarget" data-i="${i}">編</button>
         <button class="btn small danger" data-act="delTarget" data-i="${i}">刪</button>
       </div>
@@ -924,6 +934,18 @@ const actions = {
     });
   },
 
+  async lookupTarget(el) {
+    const key = el.dataset.key;
+    const [mkt, sym] = key.split(":");
+    toast("查詢中…");
+    try {
+      const r = await lookupAsset(mkt, sym);
+      if (r.name) { state.assetNames = state.assetNames || {}; state.assetNames[key] = r.name; }
+      if (r.price != null && !feedPrice(key)) state.manualPrices[key] = { price: r.price, at: new Date().toISOString() };
+      save(); render();
+      toast(r.name || r.price != null ? `${r.name || sym}${r.price != null ? " ・ 現價 " + r.price : ""}` : "查無資料");
+    } catch { toast("查詢失敗"); }
+  },
   addTarget() { actions._targetForm(null); },
   editTarget(el) { actions._targetForm(+el.dataset.i); },
   _targetForm(i) {
@@ -1183,8 +1205,12 @@ async function autoBackfillPrices() {
     try {
       const r = await lookupAsset(t.mkt, t.sym);
       if (r.price != null) { state.manualPrices[t.key] = { price: r.price, at: new Date().toISOString() }; ok++; }
-      if (r.name) for (const pf of state.portfolios) for (const p2 of pf.positions) {
-        if (`${p2.market}:${p2.symbol}` === t.key && !p2.name) p2.name = r.name;
+      if (r.name) {
+        state.assetNames = state.assetNames || {};
+        state.assetNames[t.key] = r.name;
+        for (const pf of state.portfolios) for (const p2 of pf.positions) {
+          if (`${p2.market}:${p2.symbol}` === t.key && !p2.name) p2.name = r.name;
+        }
       }
     } catch {}
   }
