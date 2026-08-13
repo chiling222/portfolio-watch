@@ -228,6 +228,45 @@ body{
 .alert-strip.gold{background:rgba(168,122,30,.08);border-color:rgba(168,122,30,.35)}
 .inline-note{font-size:0.667rem;color:var(--muted);line-height:1.7;margin-top:8px}
 a{color:var(--gold)}
+
+/* ---- 頁面範圍說明橫幅(區分「個股/持倉層」與「核心策略層」) ---- */
+.scope-banner{
+  display:flex;align-items:center;gap:8px;font-size:0.667rem;color:var(--muted);
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:9px 14px;margin-bottom:12px;line-height:1.6;
+}
+.scope-banner b{color:var(--text);font-weight:700}
+
+/* ---- 資產塊偏離帶(沿用 .ruler-track/.ruler-band/.ruler-target 結構,current 值改用標記圓點) ---- */
+.ruler-dot{
+  position:absolute;top:1px;width:12px;height:12px;border-radius:50%;
+  transform:translateX(-50%);border:2px solid var(--surface);box-shadow:0 0 0 1px rgba(0,0,0,.15);
+  transition:left .4s ease;
+}
+.ruler-dot.band-in{background:var(--under)}
+.ruler-dot.band-over{background:var(--gold)}
+.ruler-dot.band-under{background:var(--muted)}
+@media(min-width:900px){.ruler-dot{width:14px;height:14px;top:2px}}
+.band-status{font-size:0.722rem;font-weight:600;flex:0 0 auto}
+.band-status.in{color:var(--under)}
+.band-status.over{color:var(--gold)}
+.band-status.under{color:var(--muted)}
+.band-action{font-size:0.667rem;color:var(--muted);margin-top:7px;line-height:1.65}
+.band-action b{color:var(--gold);font-weight:700}
+
+/* ---- 勾選清單(核心組合來源等) ---- */
+.check-list{display:flex;flex-direction:column;gap:10px}
+.check-row{display:flex;align-items:center;gap:9px;font-size:0.778rem}
+.check-row input[type="checkbox"]{width:17px;height:17px;accent-color:var(--gold);flex:0 0 auto}
+
+/* ---- 建倉排程列 ---- */
+.bs-row{padding:12px 16px;border-bottom:1px solid var(--line)}
+.bs-row:last-child{border-bottom:none}
+.bs-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}
+.bs-name{font-size:0.778rem;font-weight:600}
+.bs-meta{font-size:0.667rem;color:var(--muted)}
+.bs-dip{font-size:0.667rem;color:var(--gold);margin-top:7px;line-height:1.6}
+
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}
 }

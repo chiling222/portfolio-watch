@@ -1,5 +1,5 @@
-const CACHE = "pw-shell-v14";
-const SHELL = ["./", "index.html", "css/style.css", "js/app.js", "manifest.webmanifest", "icons/icon.svg"];
+const CACHE = "pw-shell-v15";
+const SHELL = ["./", "index.html", "css/style.css", "js/app.js", "js/allocation.js", "manifest.webmanifest", "icons/icon.svg"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

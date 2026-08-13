@@ -39,6 +39,8 @@
   <button class="tab" data-view="rebalance" role="tab">再平衡</button>
   <button class="tab" data-view="holdings" role="tab">持倉</button>
   <button class="tab" data-view="targets" role="tab">目標</button>
+  <button class="tab" data-view="apBuild" role="tab">建倉</button>
+  <button class="tab" data-view="apBand" role="tab">策略</button>
   <button class="tab" data-view="settings" role="tab">設定</button>
 </nav>
 
@@ -56,6 +58,7 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="js/app.js"></script>
+<script src="js/allocation.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
