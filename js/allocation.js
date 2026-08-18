@@ -11,7 +11,8 @@
 /* ---------------- 常數與預設值 ---------------- */
 const AP_LS_PLAN = "pw_allocation_plan_v1";
 const AP_LS_SCHEDULE = "pw_build_schedule_v1";
-const AP_LS_SNAP = "pw_price_snap_v1";
+const AP_LS_BENCHMARK = "pw_benchmark_cache_v1";
+const AP_LOOKBACK_DAYS = { "1y": 365, "3y": 365 * 3, "5y": 365 * 5 };
 
 const AP_PRESETS = {
   "703": [["core", "原型", 0.70], ["leverage", "正二", 0],    ["cash", "現金", 0.30]],
@@ -45,7 +46,18 @@ function apLoadPlan() {
 function apSavePlan(plan) { localStorage.setItem(AP_LS_PLAN, JSON.stringify(plan)); }
 
 function apDefaultSchedule() {
-  return { version: 1, enabled: true, startDate: new Date().toISOString().slice(0, 10), plans: [] };
+  return {
+    version: 1, enabled: true, startDate: new Date().toISOString().slice(0, 10), plans: [],
+    opportunityReserve: { amount: 0, label: "機會預備金", note: "與生活現金、緊急預備金完全隔離,僅供回檔/恐慌加碼動用", balance: 0 },
+    benchmark: { ticker: "TAIEX", label: "台股加權指數", lookbackHighFrom: "3y" },
+    resetThreshold: 0.05,
+  };
+}
+/** dip(原型回檔補跌,較淺)或 panic(正二恐慌建倉,較深)階梯的預設三階 */
+function apDefaultSteps(kind) {
+  return kind === "panic"
+    ? [{ drawdown: 0.30, amount: 0, fired: false }, { drawdown: 0.40, amount: 0, fired: false }, { drawdown: 0.50, amount: 0, fired: false }]
+    : [{ drawdown: 0.10, amount: 0, fired: false }, { drawdown: 0.20, amount: 0, fired: false }, { drawdown: 0.30, amount: 0, fired: false }];
 }
 function apLoadSchedule() {
   try {
@@ -64,7 +76,8 @@ function apGetSyncedSchedule(plan) {
   const existing = new Map(schedule.plans.map(pl => [pl.sleeveId, pl]));
   schedule.plans = ids.map(id => existing.get(id) || {
     sleeveId: id, mode: "lumpsum", done: false,
-    months: 12, amountPerMonth: 0, completedBatches: 0, dipRule: null,
+    months: 12, amountPerMonth: 0, completedBatches: 0,
+    dipLadder: null, activationDrawdown: 0.30, steps: null,
   });
   if (JSON.stringify(schedule.plans) !== before) apSaveSchedule(schedule);
   return schedule;
@@ -161,43 +174,95 @@ function apComputeSleeves(plan) {
   };
 }
 
-/* ---------------- 回檔加碼:前端逐日價格快照(§6.3) ---------------- */
-/** 沒有歷史報價來源,靠每次開 app 時偵測 feed 日期是否換日,滾動保留「前一個交易日」的價格做比較 */
-function apDipInfo(key) {
-  const pr = feedPrice(key) || resolvePrice(key);
-  if (!pr || !pr.price) return null;
-  const today = (feed?.updatedAt || pr.at || "").slice(0, 10);
-  if (!today) return null;
-  let snap = {};
-  try { snap = JSON.parse(localStorage.getItem(AP_LS_SNAP) || "{}"); } catch {}
-  let e = snap[key];
-  if (!e) {
-    e = { curDate: today, curPrice: pr.price, prevDate: null, prevPrice: null };
-    snap[key] = e; localStorage.setItem(AP_LS_SNAP, JSON.stringify(snap));
-  } else if (e.curDate !== today) {
-    e.prevDate = e.curDate; e.prevPrice = e.curPrice;
-    e.curDate = today; e.curPrice = pr.price;
-    localStorage.setItem(AP_LS_SNAP, JSON.stringify(snap));
+/* ---------------- 機會型加碼:大盤自高點回落(§6.3) ---------------- */
+/** 既有報價層(data/prices.json)只存最新一天收盤,沒有歷史,不得改動既有 GitHub Actions 抓價流程(§1.6)。
+    改用既有的 finmind() 即時查詢(跟 app.js 的 lookupAsset 同一機制)直接向 FinMind 要一段期間的每日收盤,
+    取最大值當「追蹤高點」。 */
+async function apFetchBenchmarkHistory(ticker, lookbackHighFrom) {
+  const days = AP_LOOKBACK_DAYS[lookbackHighFrom] || AP_LOOKBACK_DAYS["3y"];
+  const start = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const rows = await finmind({ dataset: "TaiwanStockPrice", data_id: ticker, start_date: start });
+  let high = -Infinity, highDate = null;
+  for (const r of rows) {
+    const c = +r.close;
+    if (isFinite(c) && c > high) { high = c; highDate = r.date; }
   }
-  if (e.prevPrice == null || e.prevPrice <= 0) return null;
-  const dropPct = (e.prevPrice - pr.price) / e.prevPrice;
-  return { dropPct, prevPrice: e.prevPrice, prevDate: e.prevDate, curPrice: pr.price, curDate: today };
+  const last = rows[rows.length - 1];
+  const latest = +last.close, latestDate = last.date;
+  if (latest > high) { high = latest; highDate = latestDate; }
+  return { high, highDate, latest, latestDate, firstDate: rows[0]?.date, days: rows.length };
 }
 
-/* ---------------- 建倉排程計算(§6.2) ---------------- */
-function apComputeSchedule(plan, schedule) {
+let apBenchmarkLoading = false;
+/** 讀取快取(同一天內直接用),過期則背景刷新並在完成後 render();回傳值永遠帶 loading 旗標,即使沒有舊資料也不會噴錯 */
+function apGetBenchmarkSnapshot(schedule) {
+  const ticker = schedule.benchmark?.ticker;
+  if (!ticker) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(AP_LS_BENCHMARK) || "{}"); } catch {}
+  const entry = cache[ticker];
+  const stale = !entry || entry.fetchedDate !== today || entry.lookbackHighFrom !== schedule.benchmark.lookbackHighFrom;
+  if (stale && !apBenchmarkLoading) {
+    apBenchmarkLoading = true;
+    apFetchBenchmarkHistory(ticker, schedule.benchmark.lookbackHighFrom)
+      .then(data => { cache[ticker] = { ...data, fetchedDate: today, lookbackHighFrom: schedule.benchmark.lookbackHighFrom, error: null }; })
+      .catch(err => { cache[ticker] = { ...(entry || {}), fetchedDate: today, lookbackHighFrom: schedule.benchmark.lookbackHighFrom, error: String(err?.message || err) }; })
+      .finally(() => {
+        localStorage.setItem(AP_LS_BENCHMARK, JSON.stringify(cache));
+        apBenchmarkLoading = false; render();
+      });
+  }
+  return { ...(entry || {}), loading: stale };
+}
+function apDrawdownFromHigh(snap) {
+  if (!snap || !snap.high || !snap.latest) return null;
+  return (snap.latest - snap.high) / snap.high; // ≤ 0
+}
+/** steps: [{drawdown, amount, fired}], drawdown 為觸發門檻(正數,例如 0.1 代表回落 10%) */
+function apEvalSteps(steps, drawdown) {
+  const mag = Math.abs(Math.min(0, drawdown || 0));
+  return (steps || []).map(st => ({ ...st, status: st.fired ? "fired" : (mag >= st.drawdown ? "ready" : "pending") }));
+}
+/** 正二「恐慌建倉」硬上限(§6.3.4):投入後不得使該 sleeve 佔核心比例超過框架目標 */
+function apLadderCappedAmount(step, sleeveRow, coreTotal, reserveBalance) {
+  const target = sleeveRow?.sleeve?.target ?? 0;
+  const v = sleeveRow?.value ?? 0;
+  const cap = target >= 1 ? Infinity : Math.max(0, (target * coreTotal - v) / (1 - target));
+  return Math.max(0, Math.min(step.amount, cap, reserveBalance));
+}
+
+/* ---------------- 建倉排程計算(§6.2 + §6.3) ---------------- */
+function apComputeSchedule(plan, schedule, benchSnap) {
   const sMap = new Map(plan.framework.sleeves.map(s => [s.id, s]));
   const sleeveVals = apComputeSleeves(plan);
   const rowsBySleeve = new Map(sleeveVals.rows.map(r => [r.sleeve.id, r]));
   let dueThisMonth = 0;
+
+  const drawdown = apDrawdownFromHigh(benchSnap);
+  const drawdownMag = drawdown != null ? Math.abs(Math.min(0, drawdown)) : null;
+
+  // §6.3.5 循環重置:回升到 resetThreshold 內時,一次把所有階梯 fired 清空(只在收復時,絕不在下跌途中重置)
+  if (drawdownMag != null && drawdownMag <= schedule.resetThreshold) {
+    let changed = false;
+    for (const pl of schedule.plans) {
+      for (const steps of [pl.dipLadder?.steps, pl.steps]) {
+        if (!steps) continue;
+        for (const st of steps) if (st.fired) { st.fired = false; changed = true; }
+      }
+    }
+    if (changed) apSaveSchedule(schedule);
+  }
+
   const items = schedule.plans.map(pl => {
     const sleeve = sMap.get(pl.sleeveId);
     if (!sleeve) return null;
-    let progressPct, outstandingAmt = 0, statusText;
+    const row = rowsBySleeve.get(pl.sleeveId);
+    let progressPct = null, outstandingAmt = 0, statusText;
     if (pl.mode === "lumpsum") {
       progressPct = pl.done ? 1 : 0;
       statusText = pl.done ? "一次到位 ✓" : "尚未投入";
-    } else {
+    } else if (pl.mode === "dca") {
       const elapsed = apElapsedMonths(schedule.startDate);
       const dueBatches = Math.max(0, Math.min(elapsed + 1, pl.months));
       const outstanding = Math.max(0, dueBatches - pl.completedBatches);
@@ -205,20 +270,34 @@ function apComputeSchedule(plan, schedule) {
       dueThisMonth += outstandingAmt;
       progressPct = pl.months > 0 ? pl.completedBatches / pl.months : 0;
       statusText = `${pl.completedBatches} / ${pl.months} 批`;
+    } else {
+      statusText = "恐慌階梯(選配)";
     }
-    let dip = null;
-    if (pl.dipRule?.enabled) {
-      const row = rowsBySleeve.get(pl.sleeveId);
-      const top = row?.members?.find(m => !m.key.startsWith("mc:") && m.key !== "__cash__");
-      if (top) {
-        const info = apDipInfo(top.key);
-        if (info && info.dropPct >= pl.dipRule.dropPct) dip = { ...info, name: top.name };
-      }
+
+    let ladder = null;
+    if (pl.mode === "dca" && pl.dipLadder?.enabled && drawdownMag != null) {
+      const steps = apEvalSteps(pl.dipLadder.steps, drawdown).map(st => ({
+        ...st, suggested: Math.max(0, Math.min(st.amount, schedule.opportunityReserve.balance)),
+      }));
+      ladder = { kind: "dip", steps, active: true };
+    } else if (pl.mode === "panic_ladder") {
+      const activated = drawdownMag != null && drawdownMag >= pl.activationDrawdown;
+      const rawSteps = pl.steps || apDefaultSteps("panic");
+      const steps = activated
+        ? apEvalSteps(rawSteps, drawdown).map(st => {
+            const capped = apLadderCappedAmount(st, row, sleeveVals.coreTotal, schedule.opportunityReserve.balance);
+            return { ...st, suggested: capped, atCap: st.status !== "fired" && capped <= 0 };
+          })
+        : rawSteps.map(st => ({ ...st, status: st.fired ? "fired" : "pending", suggested: 0 }));
+      ladder = { kind: "panic", steps, active: activated, activationDrawdown: pl.activationDrawdown };
     }
-    return { plan: pl, sleeve, progressPct, statusText, outstandingAmt, dip };
+
+    return { plan: pl, sleeve, progressPct, statusText, outstandingAmt, ladder };
   }).filter(Boolean);
-  const allDone = items.length > 0 && items.every(it => it.plan.mode === "lumpsum" ? it.plan.done : it.plan.completedBatches >= it.plan.months);
-  return { items, dueThisMonth, allDone };
+
+  const buildItems = items.filter(it => it.plan.mode !== "panic_ladder");
+  const allDone = buildItems.length > 0 && buildItems.every(it => it.plan.mode === "lumpsum" ? it.plan.done : it.plan.completedBatches >= it.plan.months);
+  return { items, buildItems, dueThisMonth, allDone, drawdown, drawdownMag, benchSnap };
 }
 
 /* ---------------- 視圖:建倉排程 ---------------- */
@@ -238,37 +317,100 @@ function vBuildSchedule() {
   if (!schedule.enabled) {
     return html + `<div class="empty">建倉排程尚未啟用。請到「設定」頁的「偏離帶與建倉參數」區塊開啟。</div>`;
   }
-  const c = apComputeSchedule(plan, schedule);
+  const benchSnap = apGetBenchmarkSnapshot(schedule);
+  const c = apComputeSchedule(plan, schedule, benchSnap);
+
   if (c.allDone && !apScheduleExpanded) {
-    return html + `<div class="card" style="text-align:center;cursor:pointer" data-act="apToggleScheduleExpand">
+    html += `<div class="card" style="text-align:center;cursor:pointer" data-act="apToggleScheduleExpand">
       <div style="font-weight:700;color:var(--under)">✓ 建倉排程已全部完成</div>
       <div class="inline-note">點擊展開查看歷史紀錄</div>
     </div>`;
-  }
-  if (c.allDone) {
-    html += `<div class="section-title"><span>建倉排程(已完成)</span>
-      <button class="btn small" data-act="apToggleScheduleExpand">收合</button></div>`;
   } else {
-    html += `<div class="card">
-      <div style="font-size:12px;color:var(--muted)">本月待投</div>
-      <div class="num" style="font-size:22px;font-weight:700;color:var(--gold)">${fmtMoney(c.dueThisMonth)}</div>
-      <div class="inline-note">${esc(schedule.startDate)} 起算</div>
-    </div>`;
+    if (c.allDone) {
+      html += `<div class="section-title"><span>建倉排程(已完成)</span>
+        <button class="btn small" data-act="apToggleScheduleExpand">收合</button></div>`;
+    } else {
+      html += `<div class="card">
+        <div style="font-size:12px;color:var(--muted)">本月待投</div>
+        <div class="num" style="font-size:22px;font-weight:700;color:var(--gold)">${fmtMoney(c.dueThisMonth)}</div>
+        <div class="inline-note">${esc(schedule.startDate)} 起算</div>
+      </div>`;
+    }
+    html += `<div class="card flat">` + c.buildItems.map(it => {
+      const pct = Math.min(100, (it.progressPct || 0) * 100);
+      const isLumpsum = it.plan.mode === "lumpsum";
+      const btn = isLumpsum
+        ? `<button class="btn small" data-act="apToggleLumpsum" data-sleeve="${esc(it.plan.sleeveId)}">${it.plan.done ? "取消完成" : "標記完成"}</button>`
+        : `<button class="btn small" data-act="apCompleteBatch" data-sleeve="${esc(it.plan.sleeveId)}" ${it.plan.completedBatches >= it.plan.months ? "disabled" : ""}>完成本月</button>`;
+      return `<div class="bs-row">
+        <div class="bs-head"><span class="bs-name">${esc(it.sleeve.label)}</span><span class="bs-meta num">${esc(it.statusText)}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        ${!isLumpsum && it.outstandingAmt > 0 ? `<div class="bs-meta num" style="margin-top:6px">本月待投 ${fmtMoney(it.outstandingAmt)}</div>` : ""}
+        <div class="row-actions" style="margin-top:8px">${btn}</div>
+      </div>`;
+    }).join("") + `</div>`;
   }
-  html += `<div class="card flat">` + c.items.map(it => {
-    const pct = Math.min(100, it.progressPct * 100);
-    const isLumpsum = it.plan.mode === "lumpsum";
-    const btn = isLumpsum
-      ? `<button class="btn small" data-act="apToggleLumpsum" data-sleeve="${esc(it.plan.sleeveId)}">${it.plan.done ? "取消完成" : "標記完成"}</button>`
-      : `<button class="btn small" data-act="apCompleteBatch" data-sleeve="${esc(it.plan.sleeveId)}" ${it.plan.completedBatches >= it.plan.months ? "disabled" : ""}>完成本月</button>`;
-    return `<div class="bs-row">
-      <div class="bs-head"><span class="bs-name">${esc(it.sleeve.label)}</span><span class="bs-meta num">${esc(it.statusText)}</span></div>
-      <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      ${!isLumpsum && it.outstandingAmt > 0 ? `<div class="bs-meta num" style="margin-top:6px">本月待投 ${fmtMoney(it.outstandingAmt)}</div>` : ""}
-      ${it.dip ? `<div class="bs-dip">🔻 ${esc(it.dip.name)} 自 ${esc(it.dip.prevDate)} 以來下跌 ${fmtPct(it.dip.dropPct * 100)},可考慮提前投一批(僅提示,不會自動計入進度)</div>` : ""}
-      <div class="row-actions" style="margin-top:8px">${btn}</div>
-    </div>`;
-  }).join("") + `</div>`;
+
+  html += apOpportunitySectionHtml(schedule, c);
+  return html;
+}
+
+/** §6.3/§6.4 機會加碼區:大盤回落狀態、預備金餘額、原型回檔補跌與正二恐慌建倉階梯 */
+function apOpportunitySectionHtml(schedule, c) {
+  const ladderItems = c.items.filter(it => it.ladder);
+  if (!ladderItems.length && !schedule.opportunityReserve.amount) return "";
+
+  let ddText;
+  if (!schedule.benchmark?.ticker) ddText = "尚未設定基準指數";
+  else if (c.benchSnap?.error && c.drawdownMag == null) ddText = `大盤資料讀取失敗:${esc(c.benchSnap.error)}`;
+  else if (c.drawdownMag == null) ddText = c.benchSnap?.loading ? "讀取大盤資料中…" : "尚無大盤資料";
+  else ddText = `${esc(schedule.benchmark.label || schedule.benchmark.ticker)} 自高點回落 ${fmtPct(c.drawdownMag * 100)}${c.benchSnap?.loading ? "(背景更新中)" : ""}`;
+  const limitedNote = c.benchSnap?.days != null && c.benchSnap.days < 60 ? `<div class="inline-note">高點基準資料有限(僅 ${c.benchSnap.days} 個交易日)</div>` : "";
+
+  let html = `<div class="section-title"><span>機會加碼</span></div>`;
+  html += `<div class="card">
+    <div class="list-row" style="padding:0 0 10px">
+      <div class="list-main"><div class="list-title">${ddText}</div>
+        ${c.benchSnap?.highDate ? `<div class="list-sub num">追蹤高點 ${nf2.format(c.benchSnap.high)}(${esc(c.benchSnap.highDate)})</div>` : ""}
+        ${limitedNote}</div>
+      <button class="btn small" data-act="apRefreshBenchmark" style="flex:0 0 auto">↻</button>
+    </div>
+    <div class="list-row" style="padding-top:10px;border-top:1px solid var(--line)">
+      <div class="list-main"><div class="list-title">機會預備金餘額</div>
+        <div class="list-sub">${esc(schedule.opportunityReserve.label)}(總額 ${fmtMoney(schedule.opportunityReserve.amount)},與生活現金/緊急預備金隔離)</div></div>
+      <div class="list-val"><div class="v num">${fmtMoney(schedule.opportunityReserve.balance)}</div></div>
+    </div>
+  </div>`;
+
+  if (ladderItems.length) {
+    html += `<div class="card flat">` + ladderItems.map(it => {
+      const kindLabel = it.ladder.kind === "panic" ? "恐慌建倉階梯" : "回檔補跌階梯";
+      const dormant = (it.ladder.kind === "panic" && !it.ladder.active)
+        ? `<div class="inline-note">休眠中,${esc(schedule.benchmark.label || schedule.benchmark.ticker)}自高點回落達 ${fmtPct(it.ladder.activationDrawdown * 100)} 才啟動;就算一階都沒執行,計畫也不受影響。</div>`
+        : "";
+      const stepsHtml = it.ladder.steps.map((st, i) => {
+        const label = st.status === "fired" ? "已執行 ✓" : (st.status === "ready" ? "待執行" : (st.atCap ? "已達上限" : "未達門檻"));
+        let noteText = "";
+        if (st.status === "ready") {
+          noteText = `建議投入約 ${fmtMoney(st.suggested)}`;
+          if (st.atCap) noteText += "(已壓到正二目標上限)";
+          else if (st.suggested < st.amount && st.suggested > 0) noteText += "(預備金不足,部分投入)";
+          else if (st.suggested <= 0) noteText = "預備金已用罄,暫無建議";
+        } else if (st.atCap) {
+          noteText = "正二佔比已達框架目標,不再建議加碼";
+        }
+        return `<div class="list-row">
+          <div class="list-main"><div class="list-title">第 ${i + 1} 階(回落 ${fmtPct(st.drawdown * 100)})<span class="badge ${st.status === "ready" ? "gold" : ""}">${label}</span></div>
+            ${noteText ? `<div class="list-sub num">${esc(noteText)}</div>` : ""}</div>
+          ${st.status === "ready" ? `<div class="row-actions"><button class="btn small" data-act="apFireLadderStep" data-sleeve="${it.sleeve.id}" data-kind="${it.ladder.kind}" data-i="${i}">標記已執行</button></div>` : ""}
+        </div>`;
+      }).join("");
+      return `<div class="bs-row">
+        <div class="bs-head"><span class="bs-name">${esc(it.sleeve.label)}・${kindLabel}</span></div>
+        ${dormant}${stepsHtml}
+      </div>`;
+    }).join("") + `</div>`;
+  }
   return html;
 }
 
@@ -435,13 +577,26 @@ function apSettingsSection() {
   html += `<div class="card flat">` + schedule.plans.map(pl => {
     const sleeve = plan.framework.sleeves.find(s => s.id === pl.sleeveId);
     if (!sleeve) return "";
-    const modeLabel = pl.mode === "lumpsum" ? "一次到位" : `分批 ${pl.months} 期・每期 ${fmtMoney(pl.amountPerMonth)}`;
+    const modeLabel = pl.mode === "lumpsum" ? "一次到位" : pl.mode === "panic_ladder" ? "恐慌階梯(不做DCA)" : `分批 ${pl.months} 期・每期 ${fmtMoney(pl.amountPerMonth)}`;
+    const ladderNote = pl.mode === "dca" && pl.dipLadder?.enabled ? "・已啟用回檔補跌階梯"
+      : pl.mode === "panic_ladder" ? `・啟動地板 ≥${fmtPct((pl.activationDrawdown ?? 0.3) * 100)}` : "";
     return `<div class="list-row">
       <div class="list-main"><div class="list-title">${esc(sleeve.label)}</div>
-        <div class="list-sub num">${modeLabel}${pl.mode === "dca" && pl.dipRule?.enabled ? `・回檔加碼 ≥${fmtPct(pl.dipRule.dropPct * 100)}` : ""}</div></div>
+        <div class="list-sub num">${modeLabel}${ladderNote}</div></div>
       <div class="row-actions"><button class="btn small" data-act="apEditSchedulePlan" data-sleeve="${sleeve.id}">編輯</button></div>
     </div>`;
   }).join("") + `</div>`;
+
+  html += `<div class="section-title"><span>機會加碼(獨立於現金塊/緊急預備金)</span></div>`;
+  html += `<div class="card flat">
+    <div class="list-row"><div class="list-main"><div class="list-title">機會預備金</div>
+      <div class="list-sub num">${esc(schedule.opportunityReserve.label)} — 餘額 ${fmtMoney(schedule.opportunityReserve.balance)} / 總額 ${fmtMoney(schedule.opportunityReserve.amount)}</div></div>
+      <button class="btn small" data-act="apEditReserve">調整</button></div>
+    <div class="list-row"><div class="list-main"><div class="list-title">基準指數</div>
+      <div class="list-sub num">${esc(schedule.benchmark.label || schedule.benchmark.ticker)}(${esc(schedule.benchmark.ticker)})・回看${schedule.benchmark.lookbackHighFrom}・收復門檻 ${fmtPct(schedule.resetThreshold * 100)}</div></div>
+      <button class="btn small" data-act="apEditBenchmark">調整</button></div>
+  </div>
+  <p class="inline-note">這筆錢跟你的生活現金、緊急預備金完全分開,只在回檔/恐慌加碼階梯觸發時動用;「標記已執行」會自動從餘額扣除建議金額,你也可以隨時手動修正餘額。</p>`;
 
   return html;
 }
@@ -588,22 +743,102 @@ const apActions = {
     const pl = schedule.plans.find(p => p.sleeveId === el.dataset.sleeve);
     if (!pl) return;
     const sleeve = plan.framework.sleeves.find(s => s.id === pl.sleeveId);
+    const dip = pl.dipLadder?.steps || apDefaultSteps("dip");
+    const panic = pl.steps || apDefaultSteps("panic");
+    const stepFields = (prefix, steps) => steps.flatMap((st, i) => [{
+      id: `${prefix}${i}`, type: "row", fields: [
+        { id: `${prefix}${i}dd`, label: `第${i + 1}階回落%`, type: "number", value: st.drawdown * 100, step: "any" },
+        { id: `${prefix}${i}amt`, label: `第${i + 1}階金額`, type: "number", value: st.amount, step: "any" },
+      ],
+    }]);
     openModal(`建倉參數:${sleeve?.label || ""}`, [
       { id: "mode", label: "模式", type: "select", value: pl.mode,
-        options: [{ value: "lumpsum", label: "一次到位" }, { value: "dca", label: "分批(DCA)" }] },
+        options: [{ value: "lumpsum", label: "一次到位" }, { value: "dca", label: "分批(DCA)" }, { value: "panic_ladder", label: "恐慌階梯(不做DCA,深跌才啟動)" }] },
       { id: "months", label: "總期數(月,DCA 適用)", type: "number", value: pl.months || 12, step: "1" },
       { id: "amount", label: "每期金額(TWD,DCA 適用)", type: "number", value: pl.amountPerMonth || 0, step: "any" },
-      { id: "dip", label: "回檔加碼提示", type: "select", value: pl.dipRule?.enabled ? "1" : "0",
+      { id: "dipOn", label: "回檔補跌階梯(DCA 適用,加速但不取代 DCA)", type: "select", value: pl.dipLadder?.enabled ? "1" : "0",
         options: [{ value: "0", label: "不啟用" }, { value: "1", label: "啟用" }] },
-      { id: "dipPct", label: "回檔加碼門檻(%,例如 5)", type: "number", value: pl.dipRule?.dropPct ? pl.dipRule.dropPct * 100 : 5, step: "any" },
+      ...stepFields("dip", dip),
+      { id: "activation", label: "恐慌階梯啟動地板%(panic_ladder 適用)", type: "number", value: (pl.activationDrawdown ?? 0.30) * 100, step: "any" },
+      ...stepFields("pc", panic),
     ], v => {
       pl.mode = v.mode;
       pl.months = Math.max(1, Math.round(+v.months || 12));
       pl.amountPerMonth = Math.max(0, +v.amount || 0);
       pl.completedBatches = Math.min(pl.completedBatches || 0, pl.months);
-      pl.dipRule = v.dip === "1" ? { enabled: true, dropPct: Math.max(0, +v.dipPct || 0) / 100 } : null;
+      const mkSteps = (prefix, prevSteps) => [0, 1, 2].map(i => ({
+        drawdown: Math.max(0, +v[`${prefix}${i}dd`] || 0) / 100,
+        amount: Math.max(0, +v[`${prefix}${i}amt`] || 0),
+        fired: prevSteps?.[i]?.fired || false,
+      }));
+      pl.dipLadder = { enabled: v.dipOn === "1", steps: mkSteps("dip", pl.dipLadder?.steps) };
+      pl.activationDrawdown = Math.max(0, +v.activation || 0) / 100;
+      pl.steps = mkSteps("pc", pl.steps);
       apSaveSchedule(schedule); render(); toast("已儲存");
     });
+  },
+  apEditReserve() {
+    const schedule = apGetSyncedSchedule(apLoadPlan());
+    openModal("機會預備金", [
+      { id: "label", label: "名稱", value: schedule.opportunityReserve.label, required: true },
+      { id: "amount", label: "總額(TWD)", type: "number", value: schedule.opportunityReserve.amount, step: "any" },
+      { id: "balance", label: "目前餘額(TWD)", type: "number", value: schedule.opportunityReserve.balance, step: "any" },
+    ], v => {
+      schedule.opportunityReserve.label = v.label;
+      schedule.opportunityReserve.amount = Math.max(0, Math.round(+v.amount || 0));
+      schedule.opportunityReserve.balance = Math.max(0, Math.round(+v.balance || 0));
+      apSaveSchedule(schedule); render();
+    });
+  },
+  apEditBenchmark() {
+    const schedule = apGetSyncedSchedule(apLoadPlan());
+    openModal("基準指數設定", [
+      { id: "ticker", label: "指數代號(FinMind)", value: schedule.benchmark.ticker, required: true, placeholder: "TAIEX = 台股加權指數" },
+      { id: "label", label: "顯示名稱", value: schedule.benchmark.label },
+      { id: "lookback", label: "回看範圍", type: "select", value: schedule.benchmark.lookbackHighFrom,
+        options: [{ value: "1y", label: "近 1 年" }, { value: "3y", label: "近 3 年" }, { value: "5y", label: "近 5 年" }] },
+      { id: "reset", label: "收復門檻%(回落到此範圍內視為收復,重置階梯)", type: "number", value: schedule.resetThreshold * 100, step: "any" },
+    ], v => {
+      if (!v.ticker) return false;
+      schedule.benchmark = { ticker: v.ticker.trim().toUpperCase(), label: v.label || v.ticker, lookbackHighFrom: v.lookback };
+      schedule.resetThreshold = Math.max(0, +v.reset || 0) / 100;
+      apSaveSchedule(schedule);
+      let cache = {};
+      try { cache = JSON.parse(localStorage.getItem(AP_LS_BENCHMARK) || "{}"); } catch {}
+      delete cache[schedule.benchmark.ticker];
+      localStorage.setItem(AP_LS_BENCHMARK, JSON.stringify(cache));
+      render(); toast("已儲存,重新整理大盤資料中…");
+    });
+  },
+  apRefreshBenchmark() {
+    const schedule = apGetSyncedSchedule(apLoadPlan());
+    const ticker = schedule.benchmark?.ticker;
+    if (!ticker) return;
+    let cache = {};
+    try { cache = JSON.parse(localStorage.getItem(AP_LS_BENCHMARK) || "{}"); } catch {}
+    delete cache[ticker];
+    localStorage.setItem(AP_LS_BENCHMARK, JSON.stringify(cache));
+    apBenchmarkLoading = false;
+    render();
+  },
+  apFireLadderStep(el) {
+    const plan = apLoadPlan();
+    const schedule = apGetSyncedSchedule(plan);
+    const pl = schedule.plans.find(p => p.sleeveId === el.dataset.sleeve);
+    if (!pl) return;
+    const i = +el.dataset.i;
+    const kind = el.dataset.kind;
+    const steps = kind === "panic" ? pl.steps : pl.dipLadder?.steps;
+    const st = steps?.[i];
+    if (!st || st.fired) return;
+    const sleeveVals = apComputeSleeves(plan);
+    const row = sleeveVals.rows.find(r => r.sleeve.id === pl.sleeveId);
+    const suggested = kind === "panic"
+      ? apLadderCappedAmount(st, row, sleeveVals.coreTotal, schedule.opportunityReserve.balance)
+      : Math.max(0, Math.min(st.amount, schedule.opportunityReserve.balance));
+    st.fired = true;
+    schedule.opportunityReserve.balance = Math.max(0, schedule.opportunityReserve.balance - suggested);
+    apSaveSchedule(schedule); render(); toast("已標記執行,預備金餘額已扣除");
   },
   apCompleteBatch(el) {
     const schedule = apLoadSchedule();
