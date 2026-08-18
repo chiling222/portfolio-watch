@@ -265,7 +265,6 @@ a{color:var(--gold)}
 .bs-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}
 .bs-name{font-size:0.778rem;font-weight:600}
 .bs-meta{font-size:0.667rem;color:var(--muted)}
-.bs-dip{font-size:0.667rem;color:var(--gold);margin-top:7px;line-height:1.6}
 
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}
